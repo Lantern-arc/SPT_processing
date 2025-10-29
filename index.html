@@ -30,6 +30,16 @@
   <h1>Обработка результатов СПТ 2024</h1>
   <p>Загрузите файл (.xlsx, .xls, .csv).</p>
 
+  <!-- 🔹 Чекбокс с автоподгрузкой справочника -->
+  <div class="card" style="margin-bottom:20px;">
+    <label style="display:flex;align-items:center;gap:8px;margin:0;">
+      <input type="checkbox" id="addInterpToggle" checked />
+      Добавлять полную интерпретацию в индивидуальные отчёты
+    </label>
+    <p class="muted" id="interpStatus">Поиск справочника интерпретаций…</p>
+  </div>
+
+  <!-- 🔹 Требования -->
   <div class="card">
     <p><strong>Требования к таблице:</strong></p>
     <ul>
@@ -42,6 +52,7 @@
     </ul>
   </div>
 
+  <!-- 🔹 Загрузка файла -->
   <div class="card">
     <label for="file">Выберите файл для обработки:</label>
     <div class="row">
@@ -52,14 +63,7 @@
     <p class="muted" id="status">Файл не загружен</p>
   </div>
 
-  <div class="card">
-    <label style="display:flex;align-items:center;gap:8px;margin:0;">
-      <input type="checkbox" id="addInterpToggle" />
-      Добавлять полную интерпретацию в индивидуальные отчёты
-    </label>
-    <p class="muted" id="interpStatus">Поиск справочника интерпретаций…</p>
-  </div>
-
+  <!-- 🔹 Превью -->
   <div class="card">
     <h2 style="font-size:16px;margin:0 0 8px;">Превью (первые строки после обработки)</h2>
     <div id="previewWrap"><table id="previewTable"></table></div>
@@ -72,7 +76,7 @@
   <script>
     let originalAOA = null;
     let workbookOut = null;
-    let interpretationMap = {}; // { 'Шкала': { 'низкий': '...', 'средний': '...', 'высокий': '...' } }
+    let interpretationMap = {}; 
 
     const fileEl = document.getElementById('file');
     const addInterpToggle = document.getElementById('addInterpToggle');
@@ -82,115 +86,91 @@
     const previewTable = document.getElementById('previewTable');
     const interpStatus = document.getElementById('interpStatus');
 
-    // ====== Автоматическая загрузка справочника из репозитория ======
-    document.addEventListener('DOMContentLoaded', () => {
-      autoLoadInterpretations();
-    });
+    document.addEventListener('DOMContentLoaded', () => autoLoadInterpretations());
 
     async function autoLoadInterpretations() {
-      // Сначала пробуем XLSX
-      try {
-        const resp = await fetch('./SPT_interpretations.xlsx', { cache: 'no-store' });
-        if (resp.ok) {
-          const buf = await resp.arrayBuffer();
+      async function tryFetch(url, type) {
+        try {
+          const resp = await fetch(url, { cache: 'no-store' });
+          if (!resp.ok) return null;
+          return type === 'arrayBuffer' ? await resp.arrayBuffer() : await resp.text();
+        } catch (_) { return null; }
+      }
+
+      const candidatesXlsx = [
+        'SPT_interpretations.xlsx',
+        './SPT_interpretations.xlsx'
+      ];
+      for (const path of candidatesXlsx) {
+        const buf = await tryFetch(path, 'arrayBuffer');
+        if (buf) {
           const wb = XLSX.read(buf, { type: 'array', raw: true });
           interpretationMap = parseInterpretationWorkbook(wb);
           interpStatus.textContent = `Справочник интерпретаций загружен (XLSX): ${Object.keys(interpretationMap).length} шкал(ы)`;
           return;
         }
-      } catch (e) {
-        // пропускаем — попробуем CSV
       }
 
-      // Затем пробуем CSV
-      try {
-        const resp = await fetch('./SPT_interpretations.csv', { cache: 'no-store' });
-        if (resp.ok) {
-          const text = await resp.text();
-          const wb = XLSX.read(text, { type: 'string' }); // SheetJS сам распарсит CSV в книгу
+      const candidatesCsv = [
+        'SPT_interpretations.csv',
+        './SPT_interpretations.csv'
+      ];
+      for (const path of candidatesCsv) {
+        const text = await tryFetch(path, 'text');
+        if (text) {
+          const wb = XLSX.read(text, { type: 'string' });
           interpretationMap = parseInterpretationWorkbook(wb);
           interpStatus.textContent = `Справочник интерпретаций загружен (CSV): ${Object.keys(interpretationMap).length} шкал(ы)`;
           return;
         }
-      } catch (e) {
-        // no-op
       }
 
-      interpStatus.textContent = 'Справочник интерпретаций не найден (ожидается SPT_interpretations.xlsx или .csv в корне).';
+      if (location.protocol === 'file:') {
+        interpStatus.textContent = 'Справочник не найден. Откройте сайт через локальный сервер (http://), а не file://';
+      } else {
+        interpStatus.textContent = 'Справочник интерпретаций не найден (ожидается SPT_interpretations.xlsx или .csv рядом с index.html).';
+      }
     }
 
     function parseInterpretationWorkbook(wb) {
       const ws = wb.Sheets[wb.SheetNames[0]];
-      // Пробуем по заголовкам
       const rowsObj = XLSX.utils.sheet_to_json(ws, { defval: '' });
       const map = {};
-      if (rowsObj.length) {
-        for (const row of rowsObj) {
-          const name = String(row['Шкала'] ?? row['шкала'] ?? '').trim();
-          if (!name) continue;
-          const low = String(row['Низкий'] ?? row['низкий'] ?? '').trim();
-          const mid = String(row['Средний'] ?? row['средний'] ?? '').trim();
-          const high = String(row['Высокий'] ?? row['высокий'] ?? '').trim();
-          if (!map[name]) map[name] = {};
-          if (low)  map[name]['низкий'] = low;
-          if (mid)  map[name]['средний'] = mid;
-          if (high) map[name]['высокий'] = high;
-        }
-        return map;
-      }
-      // Если заголовков нет — читаем как AOA
-      const aoa = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' });
-      if (aoa.length >= 2) {
-        const header = aoa[0].map(v => String(v).toLowerCase().trim());
-        const iName = header.indexOf('шкала');
-        const iLow  = header.indexOf('низкий');
-        const iMid  = header.indexOf('средний');
-        const iHigh = header.indexOf('высокий');
-        for (let r = 1; r < aoa.length; r++) {
-          const row = aoa[r];
-          const name = String(row[iName] ?? '').trim();
-          if (!name) continue;
-          const low  = String(row[iLow]  ?? '').trim();
-          const mid  = String(row[iMid]  ?? '').trim();
-          const high = String(row[iHigh] ?? '').trim();
-          if (!map[name]) map[name] = {};
-          if (low)  map[name]['низкий'] = low;
-          if (mid)  map[name]['средний'] = mid;
-          if (high) map[name]['высокий'] = high;
-        }
+      for (const row of rowsObj) {
+        const name = String(row['Шкала'] ?? row['шкала'] ?? '').trim();
+        if (!name) continue;
+        const low = String(row['Низкий'] ?? row['низкий'] ?? '').trim();
+        const mid = String(row['Средний'] ?? row['средний'] ?? '').trim();
+        const high = String(row['Высокий'] ?? row['высокий'] ?? '').trim();
+        map[name] = { низкий: low, средний: mid, высокий: high };
       }
       return map;
     }
 
-    // ===== Загрузка основного файла данных =====
     fileEl.addEventListener('change', async (e) => {
       const file = e.target.files?.[0];
       if (!file) return;
       statusEl.textContent = 'Чтение файла...';
-
       const data = await file.arrayBuffer();
       const wb = XLSX.read(data, { type: 'array' });
       const ws = wb.Sheets[wb.SheetNames[0]];
       const aoa = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' });
       originalAOA = aoa;
-
       if (!aoa.length) {
         statusEl.textContent = 'Лист пустой';
         processBtn.disabled = true;
         return;
       }
-
       statusEl.textContent = 'Файл загружен. Готов к обработке.';
       processBtn.disabled = false;
       downloadBtn.disabled = true;
       previewTable.innerHTML = '';
     });
 
-    // ===== Обработка =====
     processBtn.addEventListener('click', () => {
       if (!originalAOA) return;
 
-      // === 1) Подготовка и сортировка ===
+      // === 1. Сортировка ===
       let aoa = originalAOA.map(r => r.slice(0, 22).concat(new Array(Math.max(0, 22 - r.length)).fill('')));
       const header = aoa[0];
       const rows = aoa.slice(1);
@@ -204,7 +184,7 @@
       });
       aoa = [header].concat(rows);
 
-      // === 2) Вставка столбцов справа от G–V (без формул, сразу готовые значения) ===
+      // === 2. Добавляем 16 новых столбцов со значениями ===
       const newCatHeaders = [
         'ППЗ значение','ПВГ значение','ПАУ значение','СР значение','ИМ значение','ТР значение',
         'ФР значение','ДЕ значение','ПР значение','ПО значение','СА значение','СП значение',
@@ -230,7 +210,7 @@
         }
       }
 
-      // === 3) Индивидуальные отчёты ===
+      // === 3. Индивидуальные отчёты ===
       const scales = [
         'Плохая приспособл., зависимость','Потребн. во внимании группы','Принятие асоциальных установок',
         'Стремление к риску','Импульсивность','Тревожность','Фрустрация','Склонность к деликвентности',
@@ -253,7 +233,6 @@
             const scaleName = scales[k];
             const sten = row[6+k*2];
 
-            // Определяем уровень по стену
             let level = '';
             if (sten==='-') level='-';
             else {
@@ -265,28 +244,22 @@
               }
             }
 
-            // Базовое «значение» (уровень)
-            let value = level;
-
-            // Текст интерпретации
             let interpText = '';
             if (addInterpretations) {
-              if (level === '-') {
-                interpText = '-';
-              } else if (level && interpretationMap && interpretationMap[scaleName]) {
-                const key = level.toLowerCase();
-                interpText = interpretationMap[scaleName][key] || '';
+              if (level === '-') interpText = '-';
+              else if (interpretationMap[scaleName]) {
+                interpText = interpretationMap[scaleName][level.toLowerCase()] || '';
               }
             }
 
-            if (addInterpretations) reports.push([scaleName, sten, value, interpText]);
-            else reports.push([scaleName, sten, value]);
+            if (addInterpretations) reports.push([scaleName, sten, level, interpText]);
+            else reports.push([scaleName, sten, level]);
           }
           reports.push(['']);reports.push(['']);
         }
       }
 
-      // === 4) Сборка книги и превью ===
+      // === 4. Сборка ===
       const ws1=XLSX.utils.aoa_to_sheet(aoa);
       const ws2=XLSX.utils.aoa_to_sheet(reports.length?reports:[['Нет данных для группы риска']]);
       const wb=XLSX.utils.book_new();
@@ -300,11 +273,10 @@
       downloadBtn.disabled=false;
 
       if (addInterpretations && Object.keys(interpretationMap).length===0) {
-        alert('Чекбокс включён, но справочник не найден/не считан. В «Интерпретации» будут прочерки.');
+        alert('Чекбокс включён, но справочник не найден. В «Интерпретации» будут прочерки.');
       }
     });
 
-    // ===== Скачивание =====
     downloadBtn.addEventListener('click',()=>{
       if(workbookOut) XLSX.writeFile(workbookOut,'processed.xlsx');
     });
