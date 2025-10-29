@@ -1,0 +1,190 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Обработка результатов СПТ 2024</title>
+  <style>
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; margin: 24px; position: relative; }
+    h1 { font-size: 22px; margin: 0 0 12px; }
+    .card { border: 1px solid #e5e7eb; border-radius: 12px; padding: 16px; box-shadow: 0 3px 10px rgba(0,0,0,.06); margin-bottom: 16px; }
+    label { display:block; margin-bottom: 8px; font-weight: 600; }
+    input[type=file] { padding: 10px; border: 1px solid #ddd; border-radius: 8px; width: 100%; max-width: 420px; }
+    button { padding: 10px 14px; border: 0; border-radius: 10px; cursor: pointer; margin-right: 8px; }
+    button.primary { background: #111827; color: white; }
+    button.secondary { background: #f3f4f6; }
+    .row { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+    .muted { color: #6b7280; font-size: 12px; }
+    table { border-collapse: collapse; width: 100%; overflow: auto; }
+    th, td { border: 1px solid #e5e7eb; padding: 6px 8px; font-size: 12px; text-align: left; }
+    th { background: #f9fafb; position: sticky; top: 0; }
+    #previewWrap { max-height: 420px; overflow: auto; border: 1px solid #eee; border-radius: 12px; }
+    footer { font-size: 11px; color: #6b7280; text-align: center; margin-top: 40px; border-top: 1px solid #e5e7eb; padding-top: 10px; }
+  </style>
+
+  <!-- ✅ Подключаем библиотеку XLSX -->
+  <script src="./libs/xlsx.full.min.js"></script>
+</head>
+
+<body>
+  <h1>Обработка результатов СПТ 2024</h1>
+  <p>Загрузите файл (.xlsx, .xls, .csv).</p>
+  <div class="card">
+    <p><strong>Требования к таблице:</strong></p>
+    <ul>
+      <li>Первая строка — шапка таблицы.</li>
+      <li>Столбец A — Группа/класс</li>
+      <li>Столбец B — ФИО/МЭШ-ID</li>
+      <li>Столбцы C, D, E — Факторы риска (сумма), Факторы защиты (сумма), Контрольная шкала</li>
+      <li>Столбец F — Результат (Норма, Высокая вероятность риска, Группа риска)</li>
+      <li>Столбцы G–V — Значения шкал в стенах</li>
+    </ul>
+  </div>
+
+  <div class="card">
+    <label for="file">Выберите файл для обработки:</label>
+    <div class="row">
+      <input id="file" type="file" accept=".xlsx,.xls,.csv" />
+      <button class="primary" id="processBtn" disabled>Обработать</button>
+      <button class="secondary" id="downloadBtn" disabled>Скачать XLSX</button>
+    </div>
+    <p class="muted" id="status">Файл не загружен</p>
+  </div>
+
+  <div class="card">
+    <h2 style="font-size:16px;margin:0 0 8px;">Превью (первые строки после обработки)</h2>
+    <div id="previewWrap"><table id="previewTable"></table></div>
+  </div>
+
+  <footer>
+    by LanternARC. Все права защищены. Данный сайт не хранит и не передает данные, указанные в загружаемых таблицах.
+  </footer>
+
+  <script>
+    let originalAOA = null;
+    let workbookOut = null;
+
+    const fileEl = document.getElementById('file');
+    const processBtn = document.getElementById('processBtn');
+    const downloadBtn = document.getElementById('downloadBtn');
+    const statusEl = document.getElementById('status');
+    const previewTable = document.getElementById('previewTable');
+
+    fileEl.addEventListener('change', async (e) => {
+      const file = e.target.files?.[0];
+      if (!file) return;
+      statusEl.textContent = 'Чтение файла...';
+
+      const data = await file.arrayBuffer();
+      const wb = XLSX.read(data, { type: 'array' });
+      const ws = wb.Sheets[wb.SheetNames[0]];
+      const aoa = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' });
+      originalAOA = aoa;
+
+      if (!aoa.length) {
+        statusEl.textContent = 'Лист пустой';
+        processBtn.disabled = true;
+        return;
+      }
+
+      statusEl.textContent = 'Файл загружен. Готов к обработке.';
+      processBtn.disabled = false;
+      downloadBtn.disabled = true;
+      previewTable.innerHTML = '';
+    });
+
+    processBtn.addEventListener('click', () => {
+      if (!originalAOA) return;
+
+      // === 1) Подготовка и сортировка ===
+      let aoa = originalAOA.map(r => r.slice(0, 22).concat(new Array(Math.max(0, 22 - r.length)).fill('')));
+      const header = aoa[0];
+      const rows = aoa.slice(1);
+      const orderMap = new Map([['Группа риска', 0], ['Высокая вероятность риска', 1], ['Норма', 2]]);
+      const cmp = (x,y)=>String(x).localeCompare(String(y),'ru',{numeric:true,sensitivity:'base'});
+      rows.sort((a,b)=>{
+        const fa = orderMap.get(a[5]) ?? 99, fb = orderMap.get(b[5]) ?? 99;
+        if (fa!==fb) return fa-fb;
+        const ca = cmp(a[0],b[0]); if (ca!==0) return ca;
+        return cmp(a[1],b[1]);
+      });
+      aoa = [header].concat(rows);
+
+      // === 2) Вставка столбцов справа от G–V (без формул, сразу готовые значения) ===
+      const newCatHeaders = [
+        'ППЗ значение','ПВГ значение','ПАУ значение','СР значение','ИМ значение','ТР значение',
+        'ФР значение','ДЕ значение','ПР значение','ПО значение','СА значение','СП значение',
+        'СЭ значение','АН значение','ФУ значение','ДО значение'
+      ];
+      for (let c = 21; c >= 6; c--) {
+        for (let r = 0; r < aoa.length; r++) aoa[r].splice(c+1,0,'');
+        const k = c - 6;
+        aoa[0][c+1] = newCatHeaders[k] || 'значение';
+        for (let r = 1; r < aoa.length; r++) {
+          const left = aoa[r][c];
+          let cat = '';
+          if (left === '-') cat = '-';
+          else {
+            const x = Number(left);
+            if (isFinite(x)) {
+              if (x <= 3) cat = 'Низкий';
+              else if (x <= 7) cat = 'Средний';
+              else cat = 'Высокий';
+            }
+          }
+          aoa[r][c+1] = cat;
+        }
+      }
+
+      // === 3) Индивидуальные отчёты ===
+      const scales = [
+        'Плохая приспособл., зависимость','Потребн. во внимании группы','Принятие асоциальных установок',
+        'Стремление к риску','Импульсивность','Тревожность','Фрустрация','Склонность к деликвентности',
+        'Принятие родителями','Принятие одноклассниками','Социальная активность','Самоконтроль поведения',
+        'Самоэффективность','Адаптированность к нормам','Фрустрационная устойчивость','Дружелюбие, открытость'
+      ];
+      const reports = [];
+      for (let r=1;r<aoa.length;r++){
+        const row=aoa[r];
+        if(row[5]==='Группа риска'){
+          const klass=row[0]??'';
+          const fio=row[1]??'';
+          reports.push([klass?`${fio} — ${klass}`:`${fio}`]);
+          reports.push(['Шкала','Стен','Значение']);
+          for(let k=0;k<16;k++){
+            const sten=row[6+k*2];
+            let value=''; 
+            if(sten==='-') value='-';
+            else{
+              const x=Number(sten);
+              if(isFinite(x)){
+                if(x<=3)value='Низкий'; else if(x<=7)value='Средний'; else value='Высокий';
+              }
+            }
+            reports.push([scales[k],sten,value]);
+          }
+          reports.push(['']);reports.push(['']);
+        }
+      }
+
+      // === 4) Сборка книги ===
+      const ws1=XLSX.utils.aoa_to_sheet(aoa);
+      const ws2=XLSX.utils.aoa_to_sheet(reports.length?reports:[['Нет данных для группы риска']]);
+      const wb=XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb,ws1,'Результат');
+      XLSX.utils.book_append_sheet(wb,ws2,'Индивидуальные отчёты');
+      workbookOut=wb;
+
+      // Превью
+      const html=XLSX.utils.sheet_to_html(ws1);
+      previewTable.innerHTML=html;
+      statusEl.textContent='Готово ✅';
+      downloadBtn.disabled=false;
+    });
+
+    downloadBtn.addEventListener('click',()=>{
+      if(workbookOut) XLSX.writeFile(workbookOut,'processed.xlsx');
+    });
+  </script>
+</body>
+</html>
