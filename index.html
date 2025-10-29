@@ -16,19 +16,20 @@
     .row { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
     .muted { color: #6b7280; font-size: 12px; }
     table { border-collapse: collapse; width: 100%; overflow: auto; }
-    th, td { border: 1px solid #e5e7eb; padding: 6px 8px; font-size: 12px; text-align: left; }
+    th, td { border: 1px solid #e5e7eb; padding: 6px 8px; font-size: 12px; text-align: left; vertical-align: top; }
     th { background: #f9fafb; position: sticky; top: 0; }
     #previewWrap { max-height: 420px; overflow: auto; border: 1px solid #eee; border-radius: 12px; }
     footer { font-size: 11px; color: #6b7280; text-align: center; margin-top: 40px; border-top: 1px solid #e5e7eb; padding-top: 10px; }
   </style>
 
-  <!-- ✅ Подключаем библиотеку XLSX -->
+  <!-- SheetJS -->
   <script src="./libs/xlsx.full.min.js"></script>
 </head>
 
 <body>
   <h1>Обработка результатов СПТ 2024</h1>
   <p>Загрузите файл (.xlsx, .xls, .csv).</p>
+
   <div class="card">
     <p><strong>Требования к таблице:</strong></p>
     <ul>
@@ -52,6 +53,14 @@
   </div>
 
   <div class="card">
+    <label style="display:flex;align-items:center;gap:8px;margin:0;">
+      <input type="checkbox" id="addInterpToggle" />
+      Добавлять полную интерпретацию в индивидуальные отчёты
+    </label>
+    <p class="muted" id="interpStatus">Поиск справочника интерпретаций…</p>
+  </div>
+
+  <div class="card">
     <h2 style="font-size:16px;margin:0 0 8px;">Превью (первые строки после обработки)</h2>
     <div id="previewWrap"><table id="previewTable"></table></div>
   </div>
@@ -63,13 +72,97 @@
   <script>
     let originalAOA = null;
     let workbookOut = null;
+    let interpretationMap = {}; // { 'Шкала': { 'низкий': '...', 'средний': '...', 'высокий': '...' } }
 
     const fileEl = document.getElementById('file');
+    const addInterpToggle = document.getElementById('addInterpToggle');
     const processBtn = document.getElementById('processBtn');
     const downloadBtn = document.getElementById('downloadBtn');
     const statusEl = document.getElementById('status');
     const previewTable = document.getElementById('previewTable');
+    const interpStatus = document.getElementById('interpStatus');
 
+    // ====== Автоматическая загрузка справочника из репозитория ======
+    document.addEventListener('DOMContentLoaded', () => {
+      autoLoadInterpretations();
+    });
+
+    async function autoLoadInterpretations() {
+      // Сначала пробуем XLSX
+      try {
+        const resp = await fetch('./SPT_interpretations.xlsx', { cache: 'no-store' });
+        if (resp.ok) {
+          const buf = await resp.arrayBuffer();
+          const wb = XLSX.read(buf, { type: 'array', raw: true });
+          interpretationMap = parseInterpretationWorkbook(wb);
+          interpStatus.textContent = `Справочник интерпретаций загружен (XLSX): ${Object.keys(interpretationMap).length} шкал(ы)`;
+          return;
+        }
+      } catch (e) {
+        // пропускаем — попробуем CSV
+      }
+
+      // Затем пробуем CSV
+      try {
+        const resp = await fetch('./SPT_interpretations.csv', { cache: 'no-store' });
+        if (resp.ok) {
+          const text = await resp.text();
+          const wb = XLSX.read(text, { type: 'string' }); // SheetJS сам распарсит CSV в книгу
+          interpretationMap = parseInterpretationWorkbook(wb);
+          interpStatus.textContent = `Справочник интерпретаций загружен (CSV): ${Object.keys(interpretationMap).length} шкал(ы)`;
+          return;
+        }
+      } catch (e) {
+        // no-op
+      }
+
+      interpStatus.textContent = 'Справочник интерпретаций не найден (ожидается SPT_interpretations.xlsx или .csv в корне).';
+    }
+
+    function parseInterpretationWorkbook(wb) {
+      const ws = wb.Sheets[wb.SheetNames[0]];
+      // Пробуем по заголовкам
+      const rowsObj = XLSX.utils.sheet_to_json(ws, { defval: '' });
+      const map = {};
+      if (rowsObj.length) {
+        for (const row of rowsObj) {
+          const name = String(row['Шкала'] ?? row['шкала'] ?? '').trim();
+          if (!name) continue;
+          const low = String(row['Низкий'] ?? row['низкий'] ?? '').trim();
+          const mid = String(row['Средний'] ?? row['средний'] ?? '').trim();
+          const high = String(row['Высокий'] ?? row['высокий'] ?? '').trim();
+          if (!map[name]) map[name] = {};
+          if (low)  map[name]['низкий'] = low;
+          if (mid)  map[name]['средний'] = mid;
+          if (high) map[name]['высокий'] = high;
+        }
+        return map;
+      }
+      // Если заголовков нет — читаем как AOA
+      const aoa = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' });
+      if (aoa.length >= 2) {
+        const header = aoa[0].map(v => String(v).toLowerCase().trim());
+        const iName = header.indexOf('шкала');
+        const iLow  = header.indexOf('низкий');
+        const iMid  = header.indexOf('средний');
+        const iHigh = header.indexOf('высокий');
+        for (let r = 1; r < aoa.length; r++) {
+          const row = aoa[r];
+          const name = String(row[iName] ?? '').trim();
+          if (!name) continue;
+          const low  = String(row[iLow]  ?? '').trim();
+          const mid  = String(row[iMid]  ?? '').trim();
+          const high = String(row[iHigh] ?? '').trim();
+          if (!map[name]) map[name] = {};
+          if (low)  map[name]['низкий'] = low;
+          if (mid)  map[name]['средний'] = mid;
+          if (high) map[name]['высокий'] = high;
+        }
+      }
+      return map;
+    }
+
+    // ===== Загрузка основного файла данных =====
     fileEl.addEventListener('change', async (e) => {
       const file = e.target.files?.[0];
       if (!file) return;
@@ -93,6 +186,7 @@
       previewTable.innerHTML = '';
     });
 
+    // ===== Обработка =====
     processBtn.addEventListener('click', () => {
       if (!originalAOA) return;
 
@@ -143,31 +237,56 @@
         'Принятие родителями','Принятие одноклассниками','Социальная активность','Самоконтроль поведения',
         'Самоэффективность','Адаптированность к нормам','Фрустрационная устойчивость','Дружелюбие, открытость'
       ];
+
+      const addInterpretations = !!addInterpToggle.checked;
       const reports = [];
+
       for (let r=1;r<aoa.length;r++){
         const row=aoa[r];
         if(row[5]==='Группа риска'){
           const klass=row[0]??'';
           const fio=row[1]??'';
           reports.push([klass?`${fio} — ${klass}`:`${fio}`]);
-          reports.push(['Шкала','Стен','Значение']);
+          reports.push(addInterpretations ? ['Шкала','Стен','Значение','Интерпретация'] : ['Шкала','Стен','Значение']);
+
           for(let k=0;k<16;k++){
-            const sten=row[6+k*2];
-            let value=''; 
-            if(sten==='-') value='-';
-            else{
+            const scaleName = scales[k];
+            const sten = row[6+k*2];
+
+            // Определяем уровень по стену
+            let level = '';
+            if (sten==='-') level='-';
+            else {
               const x=Number(sten);
-              if(isFinite(x)){
-                if(x<=3)value='Низкий'; else if(x<=7)value='Средний'; else value='Высокий';
+              if (isFinite(x)) {
+                if (x<=3) level='Низкий';
+                else if (x<=7) level='Средний';
+                else level='Высокий';
               }
             }
-            reports.push([scales[k],sten,value]);
+
+            // Базовое «значение» (уровень)
+            let value = level;
+
+            // Текст интерпретации
+            let interpText = '';
+            if (addInterpretations) {
+              if (level === '-') {
+                interpText = '-';
+              } else if (level && interpretationMap && interpretationMap[scaleName]) {
+                const key = level.toLowerCase();
+                interpText = interpretationMap[scaleName][key] || '';
+              }
+            }
+
+            if (addInterpretations) reports.push([scaleName, sten, value, interpText]);
+            else reports.push([scaleName, sten, value]);
           }
           reports.push(['']);reports.push(['']);
         }
       }
 
-      // === 4) Сборка книги ===
+      // === 4) Сборка книги и превью ===
       const ws1=XLSX.utils.aoa_to_sheet(aoa);
       const ws2=XLSX.utils.aoa_to_sheet(reports.length?reports:[['Нет данных для группы риска']]);
       const wb=XLSX.utils.book_new();
@@ -175,16 +294,21 @@
       XLSX.utils.book_append_sheet(wb,ws2,'Индивидуальные отчёты');
       workbookOut=wb;
 
-      // Превью
       const html=XLSX.utils.sheet_to_html(ws1);
       previewTable.innerHTML=html;
       statusEl.textContent='Готово ✅';
       downloadBtn.disabled=false;
+
+      if (addInterpretations && Object.keys(interpretationMap).length===0) {
+        alert('Чекбокс включён, но справочник не найден/не считан. В «Интерпретации» будут прочерки.');
+      }
     });
 
+    // ===== Скачивание =====
     downloadBtn.addEventListener('click',()=>{
       if(workbookOut) XLSX.writeFile(workbookOut,'processed.xlsx');
     });
   </script>
 </body>
 </html>
+
