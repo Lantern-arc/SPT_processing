@@ -3,23 +3,38 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Обработка результатов СПТ 2024</title>
+  <title>Обработка результатов СПТ</title>
   <style>
     body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; margin: 24px; position: relative; }
     h1 { font-size: 22px; margin: 0 0 12px; }
     .card { border: 1px solid #e5e7eb; border-radius: 12px; padding: 16px; box-shadow: 0 3px 10px rgba(0,0,0,.06); margin-bottom: 16px; }
+
     label { display:block; margin-bottom: 8px; font-weight: 600; }
     input[type=file] { padding: 10px; border: 1px solid #ddd; border-radius: 8px; width: 100%; max-width: 420px; }
     button { padding: 10px 14px; border: 0; border-radius: 10px; cursor: pointer; margin-right: 8px; }
     button.primary { background: #111827; color: white; }
     button.secondary { background: #f3f4f6; }
+
     .row { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
     .muted { color: #6b7280; font-size: 12px; }
+
     table { border-collapse: collapse; width: 100%; overflow: auto; }
     th, td { border: 1px solid #e5e7eb; padding: 6px 8px; font-size: 12px; text-align: left; vertical-align: top; }
     th { background: #f9fafb; position: sticky; top: 0; }
     #previewWrap { max-height: 420px; overflow: auto; border: 1px solid #eee; border-radius: 12px; }
+
     footer { font-size: 11px; color: #6b7280; text-align: center; margin-top: 40px; border-top: 1px solid #e5e7eb; padding-top: 10px; }
+
+    .checks { display:flex; gap:14px; flex-wrap:wrap; margin-top: 10px; }
+    .checks label { font-weight: 600; margin:0; display:flex; align-items:center; gap:8px; }
+    .checks input { transform: translateY(1px); }
+
+    .small-check {
+      font-size: 13px;
+      font-weight: 600;
+      margin-top: 18px;
+    }
+    .small-check input { transform: translateY(1px) scale(0.92); }
   </style>
 
   <!-- SheetJS -->
@@ -27,16 +42,31 @@
 </head>
 
 <body>
-  <h1>Обработка результатов СПТ 2024</h1>
-  <p>Загрузите файл (.xlsx, .xls, .csv).</p>
+  <h1>Обработка результатов СПТ</h1>
 
-  <!-- 🔹 Чекбокс с автоподгрузкой справочника -->
+  <div class="card" style="margin-bottom:20px;">
+    <div class="muted" style="margin-bottom:6px;">
+      Для каких категорий формировать индивидуальные отчёты:
+    </div>
+
+    <div class="checks">
+      <label><input type="checkbox" id="repRisk" checked /> Группа риска</label>
+      <label><input type="checkbox" id="repHigh" /> Высокая вероятность риска</label>
+      <label><input type="checkbox" id="repNorm" /> Норма</label>
+    </div>
+
+    <label class="small-check" style="display:flex;align-items:center;gap:8px;margin-bottom:0;">
+      <input type="checkbox" id="splitByClass" />
+      Отдельный лист для класса
+    </label>
+  </div>
+
   <div class="card" style="margin-bottom:20px;">
     <label style="display:flex;align-items:center;gap:8px;margin:0;">
       <input type="checkbox" id="addInterpToggle" checked />
       Добавлять полную интерпретацию в индивидуальные отчёты
     </label>
-    <p class="muted" id="interpStatus">Поиск справочника интерпретаций…</p>
+    <p class="muted" id="interpStatus" style="margin:8px 0 0;">Поиск справочника интерпретаций…</p>
   </div>
 
   <!-- 🔹 Требования -->
@@ -55,6 +85,7 @@
   <!-- 🔹 Загрузка файла -->
   <div class="card">
     <label for="file">Выберите файл для обработки:</label>
+    <p>Загрузите файл (.xlsx, .xls, .csv).</p>
     <div class="row">
       <input id="file" type="file" accept=".xlsx,.xls,.csv" />
       <button class="primary" id="processBtn" disabled>Обработать</button>
@@ -76,7 +107,7 @@
   <script>
     let originalAOA = null;
     let workbookOut = null;
-    let interpretationMap = {}; 
+    let interpretationMap = {};
 
     const fileEl = document.getElementById('file');
     const addInterpToggle = document.getElementById('addInterpToggle');
@@ -85,6 +116,11 @@
     const statusEl = document.getElementById('status');
     const previewTable = document.getElementById('previewTable');
     const interpStatus = document.getElementById('interpStatus');
+
+    const repRisk = document.getElementById('repRisk');
+    const repHigh = document.getElementById('repHigh');
+    const repNorm = document.getElementById('repNorm');
+    const splitByClass = document.getElementById('splitByClass');
 
     document.addEventListener('DOMContentLoaded', () => autoLoadInterpretations());
 
@@ -97,10 +133,7 @@
         } catch (_) { return null; }
       }
 
-      const candidatesXlsx = [
-        'SPT_interpretations.xlsx',
-        './SPT_interpretations.xlsx'
-      ];
+      const candidatesXlsx = ['SPT_interpretations.xlsx','./SPT_interpretations.xlsx'];
       for (const path of candidatesXlsx) {
         const buf = await tryFetch(path, 'arrayBuffer');
         if (buf) {
@@ -111,10 +144,7 @@
         }
       }
 
-      const candidatesCsv = [
-        'SPT_interpretations.csv',
-        './SPT_interpretations.csv'
-      ];
+      const candidatesCsv = ['SPT_interpretations.csv','./SPT_interpretations.csv'];
       for (const path of candidatesCsv) {
         const text = await tryFetch(path, 'text');
         if (text) {
@@ -156,6 +186,7 @@
       const ws = wb.Sheets[wb.SheetNames[0]];
       const aoa = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' });
       originalAOA = aoa;
+
       if (!aoa.length) {
         statusEl.textContent = 'Лист пустой';
         processBtn.disabled = true;
@@ -167,15 +198,63 @@
       previewTable.innerHTML = '';
     });
 
+    function normalizeClass(value) {
+      let s = String(value ?? '');
+      s = s.replace(/\u00A0/g, ' ').replace(/\s+/g, '');
+      s = s.toUpperCase();
+      const map = { 'A':'А','B':'В','C':'С','E':'Е','H':'Н','K':'К','M':'М','O':'О','P':'Р','T':'Т','X':'Х','Y':'У' };
+      s = s.replace(/[ABCEHKMOPTX Y]/g, (ch) => map[ch] || ch);
+      if (!s) s = 'Без класса';
+      return s;
+    }
+
+    function sanitizeSheetName(name) {
+      let s = String(name ?? '').replace(/[:\\/?*\[\]]/g, ' ').trim();
+      if (!s) s = 'Лист';
+      if (s.length > 31) s = s.slice(0, 31);
+      return s;
+    }
+
+    function makeUniqueSheetName(base, used) {
+      let name = sanitizeSheetName(base);
+      if (!used.has(name)) {
+        used.add(name);
+        return name;
+      }
+      for (let i = 2; i < 1000; i++) {
+        const suffix = ` (${i})`;
+        const cut = 31 - suffix.length;
+        const candidate = sanitizeSheetName(name.slice(0, cut) + suffix);
+        if (!used.has(candidate)) {
+          used.add(candidate);
+          return candidate;
+        }
+      }
+      const fallback = `Лист ${used.size + 1}`;
+      used.add(fallback);
+      return fallback;
+    }
+
     processBtn.addEventListener('click', () => {
       if (!originalAOA) return;
 
-      // === 1. Сортировка ===
+      const selected = new Set();
+      if (repRisk.checked) selected.add('Группа риска');
+      if (repHigh.checked) selected.add('Высокая вероятность риска');
+      if (repNorm.checked) selected.add('Норма');
+
+      if (selected.size === 0) {
+        alert('Нужно выбрать хотя бы одну категорию (Группа риска / Высокая вероятность риска / Норма).');
+        return;
+      }
+
       let aoa = originalAOA.map(r => r.slice(0, 22).concat(new Array(Math.max(0, 22 - r.length)).fill('')));
       const header = aoa[0];
       const rows = aoa.slice(1);
+
       const orderMap = new Map([['Группа риска', 0], ['Высокая вероятность риска', 1], ['Норма', 2]]);
       const cmp = (x,y)=>String(x).localeCompare(String(y),'ru',{numeric:true,sensitivity:'base'});
+
       rows.sort((a,b)=>{
         const fa = orderMap.get(a[5]) ?? 99, fb = orderMap.get(b[5]) ?? 99;
         if (fa!==fb) return fa-fb;
@@ -184,16 +263,17 @@
       });
       aoa = [header].concat(rows);
 
-      // === 2. Добавляем 16 новых столбцов со значениями ===
       const newCatHeaders = [
         'ППЗ значение','ПВГ значение','ПАУ значение','СР значение','ИМ значение','ТР значение',
         'ФР значение','ДЕ значение','ПР значение','ПО значение','СА значение','СП значение',
         'СЭ значение','АН значение','ФУ значение','ДО значение'
       ];
+
       for (let c = 21; c >= 6; c--) {
         for (let r = 0; r < aoa.length; r++) aoa[r].splice(c+1,0,'');
         const k = c - 6;
         aoa[0][c+1] = newCatHeaders[k] || 'значение';
+
         for (let r = 1; r < aoa.length; r++) {
           const left = aoa[r][c];
           let cat = '';
@@ -210,7 +290,6 @@
         }
       }
 
-      // === 3. Индивидуальные отчёты ===
       const scales = [
         'Плохая приспособл., зависимость','Потребн. во внимании группы','Принятие асоциальных установок',
         'Стремление к риску','Импульсивность','Тревожность','Фрустрация','Склонность к деликвентности',
@@ -219,28 +298,31 @@
       ];
 
       const addInterpretations = !!addInterpToggle.checked;
-      const reports = [];
 
-      for (let r=1;r<aoa.length;r++){
-        const row=aoa[r];
-        if(row[5]==='Группа риска'){
-          const klass=row[0]??'';
-          const fio=row[1]??'';
-          reports.push([klass?`${fio} — ${klass}`:`${fio}`]);
+      function buildReportsAOA(rowsForReports) {
+        const reports = [];
+        let count = 0;
+
+        for (const row of rowsForReports) {
+          count++;
+          const klass = normalizeClass(row[0] ?? '');
+          const fio = row[1] ?? '';
+
+          reports.push([klass ? `${fio} — ${klass}` : `${fio}`]);
           reports.push(addInterpretations ? ['Шкала','Стен','Значение','Интерпретация'] : ['Шкала','Стен','Значение']);
 
-          for(let k=0;k<16;k++){
+          for (let k=0; k<16; k++){
             const scaleName = scales[k];
-            const sten = row[6+k*2];
+            const sten = row[6 + k*2];
 
             let level = '';
-            if (sten==='-') level='-';
+            if (sten === '-') level = '-';
             else {
-              const x=Number(sten);
+              const x = Number(sten);
               if (isFinite(x)) {
-                if (x<=3) level='Низкий';
-                else if (x<=7) level='Средний';
-                else level='Высокий';
+                if (x <= 3) level = 'Низкий';
+                else if (x <= 7) level = 'Средний';
+                else level = 'Высокий';
               }
             }
 
@@ -255,31 +337,94 @@
             if (addInterpretations) reports.push([scaleName, sten, level, interpText]);
             else reports.push([scaleName, sten, level]);
           }
-          reports.push(['']);reports.push(['']);
+
+          reports.push(['']); reports.push(['']);
         }
+
+        return { reports, count };
       }
 
-      // === 4. Сборка ===
-      const ws1=XLSX.utils.aoa_to_sheet(aoa);
-      const ws2=XLSX.utils.aoa_to_sheet(reports.length?reports:[['Нет данных для группы риска']]);
-      const wb=XLSX.utils.book_new();
-      XLSX.utils.book_append_sheet(wb,ws1,'Результат');
-      XLSX.utils.book_append_sheet(wb,ws2,'Индивидуальные отчёты');
-      workbookOut=wb;
+      const rowsFiltered = aoa.slice(1).filter(r => selected.has(r[5]));
 
-      const html=XLSX.utils.sheet_to_html(ws1);
-      previewTable.innerHTML=html;
-      statusEl.textContent='Готово ✅';
-      downloadBtn.disabled=false;
+      const ws1 = XLSX.utils.aoa_to_sheet(aoa);
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, ws1, 'Результат');
 
-      if (addInterpretations && Object.keys(interpretationMap).length===0) {
+      if (splitByClass.checked) {
+        const byClass = new Map();
+        for (const r of rowsFiltered) {
+          const klassKey = normalizeClass(r[0] ?? '');
+          if (!byClass.has(klassKey)) byClass.set(klassKey, []);
+          byClass.get(klassKey).push(r);
+        }
+
+        const classNamesSorted = Array.from(byClass.keys()).sort((a,b)=>cmp(a,b));
+
+        let totalCount = 0;
+        let sheetsCreated = 0;
+        const usedSheetNames = new Set(['Результат']);
+
+        for (const klassKey of classNamesSorted) {
+          const list = byClass.get(klassKey);
+          list.sort((a,b)=>cmp(a[1], b[1])); // по ФИО
+
+          const { reports, count } = buildReportsAOA(list);
+          totalCount += count;
+
+          const sheetName = makeUniqueSheetName(klassKey, usedSheetNames); // без слова "Класс"
+          const ws = XLSX.utils.aoa_to_sheet(reports.length ? reports : [['Нет данных']]);
+          XLSX.utils.book_append_sheet(wb, ws, sheetName);
+          sheetsCreated++;
+        }
+
+        statusEl.textContent = `Готово ✅ Отчётов: ${totalCount} • Листов классов: ${sheetsCreated}`;
+      } else {
+        rowsFiltered.sort((a,b)=>{
+          const ca = cmp(a[0], b[0]); if (ca!==0) return ca;
+          return cmp(a[1], b[1]);
+        });
+
+        const { reports, count } = buildReportsAOA(rowsFiltered);
+        const ws2 = XLSX.utils.aoa_to_sheet(reports.length ? reports : [['Нет данных по выбранным категориям (столбец F).']]);
+        XLSX.utils.book_append_sheet(wb, ws2, 'Индивидуальные отчёты');
+        statusEl.textContent = `Готово ✅ Отчётов: ${count}`;
+      }
+
+      workbookOut = wb;
+      renderPreview(aoa, 40);
+      downloadBtn.disabled = false;
+
+      if (addInterpretations && Object.keys(interpretationMap).length === 0) {
         alert('Чекбокс включён, но справочник не найден. В «Интерпретации» будут прочерки.');
       }
     });
 
     downloadBtn.addEventListener('click',()=>{
-      if(workbookOut) XLSX.writeFile(workbookOut,'processed.xlsx');
+      if(workbookOut) XLSX.writeFile(workbookOut, 'processed.xlsx');
     });
+
+    function renderPreview(aoa, maxRows) {
+      const rows = aoa.slice(0, Math.max(2, maxRows));
+      let html = '';
+      if (rows.length) {
+        html += '<thead><tr>' + rows[0].map(escapeHtml).map(v => `<th>${v}</th>`).join('') + '</tr></thead>';
+        html += '<tbody>';
+        for (let r = 1; r < rows.length; r++) {
+          html += '<tr>' + rows[r].map(cell => `<td>${escapeHtml(cell)}</td>`).join('') + '</tr>';
+        }
+        html += '</tbody>';
+      }
+      previewTable.innerHTML = html;
+    }
+
+    function escapeHtml(v) {
+      if (v === null || v === undefined) return '';
+      return String(v)
+        .replaceAll('&', '&amp;')
+        .replaceAll('<', '&lt;')
+        .replaceAll('>', '&gt;')
+        .replaceAll('"', '&quot;');
+    }
   </script>
 </body>
 </html>
