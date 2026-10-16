@@ -669,7 +669,11 @@
         ...scaleHeaders
       ];
 
-      const decodeRows = result.aoa.slice(1).map(row => {
+      const mergedRows = result.aoa.slice(1).filter(row => String(row[row.length - 1]).startsWith('Объединено'));
+      if (!mergedRows.length) {
+        throw new Error('Нет успешно объединённых записей для передачи в расшифровку.');
+      }
+      const decodeRows = mergedRows.map(row => {
         const resultValues = row.slice(5, -1);
         return [
           row[3] ?? '',
@@ -684,7 +688,10 @@
         ];
       });
 
-      return [decodeHeaders, ...decodeRows];
+      return {
+        aoa: [decodeHeaders, ...decodeRows],
+        skipped: result.aoa.length - 1 - decodeRows.length
+      };
     }
 
     function activateTab(name) {
@@ -699,13 +706,16 @@
     sendToDecodeBtn.addEventListener('click', () => {
       if (!mergedProtocolResult) return;
       try {
-        const decodeAOA = buildDecodeInputFromMergedProtocol(mergedProtocolResult);
+        const transfer = buildDecodeInputFromMergedProtocol(mergedProtocolResult);
+        const decodeAOA = transfer.aoa;
         originalAOA = decodeAOA;
         workbookOut = null;
         processBtn.disabled = false;
         downloadBtn.disabled = true;
         previewTable.innerHTML = '';
-        statusEl.textContent = `Сводный протокол передан: ${decodeAOA.length - 1} строк. Выберите параметры и нажмите «Обработать».`;
+        statusEl.textContent = transfer.skipped
+          ? `Передано успешно объединённых строк: ${decodeAOA.length - 1}. Исключено несоответствий: ${transfer.skipped}. Выберите параметры и нажмите «Обработать».`
+          : `Передано успешно объединённых строк: ${decodeAOA.length - 1}. Выберите параметры и нажмите «Обработать».`;
         activateTab('decode');
         document.getElementById('decodeTab').scrollIntoView({ behavior: 'smooth', block: 'start' });
       } catch (error) {
