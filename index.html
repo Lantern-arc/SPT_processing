@@ -647,7 +647,9 @@
 
       const decodeHeaders = [
         'Группа / класс',
-        'ФИО / МЭШ-ID',
+        'ФИО',
+        'ID',
+        'МЭШ ID',
         resultHeaders[requiredColumns.risk],
         resultHeaders[requiredColumns.protection],
         resultHeaders[requiredColumns.control],
@@ -657,10 +659,11 @@
 
       const decodeRows = result.aoa.slice(1).map(row => {
         const resultValues = row.slice(5, -1);
-        const person = cleanText(row[0]) || cleanText(row[2]);
         return [
           row[3] ?? '',
-          person,
+          row[0] ?? '',
+          row[1] ?? '',
+          row[2] ?? '',
           resultValues[requiredColumns.risk] ?? '',
           resultValues[requiredColumns.protection] ?? '',
           resultValues[requiredColumns.control] ?? '',
@@ -838,6 +841,46 @@
       return fallback;
     }
 
+    function getDecodeLayout(header) {
+      const normalized = header.map(normalizeHeader);
+      const expanded = normalized.includes('фио') && normalized.includes('id') && normalized.includes('мэш id');
+      if (expanded) {
+        return {
+          expanded: true,
+          width: 24,
+          className: 0,
+          fio: normalized.indexOf('фио'),
+          id: normalized.indexOf('id'),
+          mesh: normalized.indexOf('мэш id'),
+          risk: 4,
+          protection: 5,
+          control: 6,
+          category: 7,
+          scaleStart: 8
+        };
+      }
+      return {
+        expanded: false,
+        width: 22,
+        className: 0,
+        fio: 1,
+        id: -1,
+        mesh: -1,
+        risk: 2,
+        protection: 3,
+        control: 4,
+        category: 5,
+        scaleStart: 6
+      };
+    }
+
+    function decodeIdentity(row, layout) {
+      const fio = layout.fio >= 0 ? cleanText(row[layout.fio]) : '';
+      const id = layout.id >= 0 ? cleanText(row[layout.id]) : '';
+      const mesh = layout.mesh >= 0 ? cleanText(row[layout.mesh]) : '';
+      return { fio, id, mesh, display: fio || mesh || id || 'Без идентификатора' };
+    }
+
     processBtn.addEventListener('click', () => {
       if (!originalAOA) return;
 
@@ -851,7 +894,8 @@
         return;
       }
 
-      let aoa = originalAOA.map(r => r.slice(0, 22).concat(new Array(Math.max(0, 22 - r.length)).fill('')));
+      const layout = getDecodeLayout(originalAOA[0] || []);
+      let aoa = originalAOA.map(r => r.slice(0, layout.width).concat(new Array(Math.max(0, layout.width - r.length)).fill('')));
       const header = aoa[0];
       const rows = aoa.slice(1);
 
@@ -859,10 +903,10 @@
       const cmp = (x,y)=>String(x).localeCompare(String(y),'ru',{numeric:true,sensitivity:'base'});
 
       rows.sort((a,b)=>{
-        const fa = orderMap.get(a[5]) ?? 99, fb = orderMap.get(b[5]) ?? 99;
+        const fa = orderMap.get(a[layout.category]) ?? 99, fb = orderMap.get(b[layout.category]) ?? 99;
         if (fa!==fb) return fa-fb;
-        const ca = cmp(a[0],b[0]); if (ca!==0) return ca;
-        return cmp(a[1],b[1]);
+        const ca = cmp(a[layout.className],b[layout.className]); if (ca!==0) return ca;
+        return cmp(decodeIdentity(a, layout).display, decodeIdentity(b, layout).display);
       });
       aoa = [header].concat(rows);
 
@@ -872,9 +916,9 @@
         'СЭ значение','АН значение','ФУ значение','ДО значение'
       ];
 
-      for (let c = 21; c >= 6; c--) {
+      for (let c = layout.scaleStart + 15; c >= layout.scaleStart; c--) {
         for (let r = 0; r < aoa.length; r++) aoa[r].splice(c+1,0,'');
-        const k = c - 6;
+        const k = c - layout.scaleStart;
         aoa[0][c+1] = newCatHeaders[k] || 'значение';
 
         for (let r = 1; r < aoa.length; r++) {
@@ -908,15 +952,20 @@
 
         for (const row of rowsForReports) {
           count++;
-          const klass = normalizeClass(row[0] ?? '');
-          const fio = row[1] ?? '';
+          const klass = normalizeClass(row[layout.className] ?? '');
+          const identity = decodeIdentity(row, layout);
 
-          reports.push([klass ? `${fio} — ${klass}` : `${fio}`]);
+          reports.push([klass ? `${identity.display} — ${klass}` : identity.display]);
+          if (layout.expanded) {
+            reports.push(['ФИО', identity.fio]);
+            reports.push(['ID', identity.id]);
+            reports.push(['МЭШ ID', identity.mesh]);
+          }
           reports.push(addInterpretations ? ['Шкала','Стен','Значение','Интерпретация'] : ['Шкала','Стен','Значение']);
 
           for (let k=0; k<16; k++){
             const scaleName = scales[k];
-            const sten = row[6 + k*2];
+            const sten = row[layout.scaleStart + k*2];
 
             let level = '';
             if (sten === '-') level = '-';
@@ -947,7 +996,7 @@
         return { reports, count };
       }
 
-      const rowsFiltered = aoa.slice(1).filter(r => selected.has(r[5]));
+      const rowsFiltered = aoa.slice(1).filter(r => selected.has(r[layout.category]));
 
       const ws1 = XLSX.utils.aoa_to_sheet(aoa);
       const wb = XLSX.utils.book_new();
@@ -956,7 +1005,7 @@
       if (splitByClass.checked) {
         const byClass = new Map();
         for (const r of rowsFiltered) {
-          const klassKey = normalizeClass(r[0] ?? '');
+          const klassKey = normalizeClass(r[layout.className] ?? '');
           if (!byClass.has(klassKey)) byClass.set(klassKey, []);
           byClass.get(klassKey).push(r);
         }
@@ -969,7 +1018,7 @@
 
         for (const klassKey of classNamesSorted) {
           const list = byClass.get(klassKey);
-          list.sort((a,b)=>cmp(a[1], b[1])); // по ФИО
+          list.sort((a,b)=>cmp(decodeIdentity(a, layout).display, decodeIdentity(b, layout).display));
 
           const { reports, count } = buildReportsAOA(list);
           totalCount += count;
@@ -983,8 +1032,8 @@
         statusEl.textContent = `Готово ✅ Отчётов: ${totalCount} • Листов классов: ${sheetsCreated}`;
       } else {
         rowsFiltered.sort((a,b)=>{
-          const ca = cmp(a[0], b[0]); if (ca!==0) return ca;
-          return cmp(a[1], b[1]);
+          const ca = cmp(a[layout.className], b[layout.className]); if (ca!==0) return ca;
+          return cmp(decodeIdentity(a, layout).display, decodeIdentity(b, layout).display);
         });
 
         const { reports, count } = buildReportsAOA(rowsFiltered);
