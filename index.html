@@ -143,7 +143,7 @@
 
     <div class="card" id="mergePreviewCard" hidden>
       <h2>Превью сводного протокола</h2>
-      <p class="muted">Показаны первые 40 строк. Полный результат попадёт в скачиваемый файл.</p>
+      <p class="muted">Показаны первые 40 строк. В скачиваемом файле объединённые записи и несоответствия будут на разных листах.</p>
       <div id="mergePreviewWrap"><table id="mergePreviewTable"></table></div>
     </div>
   </section>
@@ -587,17 +587,29 @@
       return { aoa: [headers, ...outputRows], matched, issues: outputRows.length - matched };
     }
 
+    function createMergeWorksheet(aoa) {
+      const worksheet = XLSX.utils.aoa_to_sheet(aoa);
+      if (aoa.length && aoa[0].length) {
+        worksheet['!autofilter'] = {
+          ref: XLSX.utils.encode_range({ s: { r: 0, c: 0 }, e: { r: Math.max(0, aoa.length - 1), c: aoa[0].length - 1 } })
+        };
+        worksheet['!cols'] = aoa[0].map((header, index) => ({
+          wch: Math.min(42, Math.max(12, String(header).length + 2, index === aoa[0].length - 1 ? 32 : 0))
+        }));
+      }
+      return worksheet;
+    }
+
     mergeBtn.addEventListener('click', () => {
       try {
         const result = buildMergedProtocol();
-        const worksheet = XLSX.utils.aoa_to_sheet(result.aoa);
-        worksheet['!autofilter'] = { ref: XLSX.utils.encode_range({ s: { r: 0, c: 0 }, e: { r: result.aoa.length - 1, c: result.aoa[0].length - 1 } }) };
-        worksheet['!cols'] = result.aoa[0].map((header, index) => ({
-          wch: Math.min(42, Math.max(12, String(header).length + 2, index === result.aoa[0].length - 1 ? 32 : 0))
-        }));
-
+        const headers = result.aoa[0];
+        const rows = result.aoa.slice(1);
+        const combinedRows = rows.filter(row => String(row[row.length - 1]).startsWith('Объединено'));
+        const mismatchRows = rows.filter(row => !String(row[row.length - 1]).startsWith('Объединено'));
         const workbook = XLSX.utils.book_new();
-        XLSX.utils.book_append_sheet(workbook, worksheet, 'Сводный протокол');
+        XLSX.utils.book_append_sheet(workbook, createMergeWorksheet([headers, ...combinedRows]), 'Объединённые');
+        XLSX.utils.book_append_sheet(workbook, createMergeWorksheet([headers, ...mismatchRows]), 'Несоответствия');
         mergeWorkbookOut = workbook;
         mergedProtocolResult = result;
 
