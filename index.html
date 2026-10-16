@@ -55,7 +55,7 @@
     .status-ok { color:#047857; }
     .status-error { color:#b91c1c; }
     .merge-help { margin:0; padding-left:20px; }
-    .summary-grid { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:10px; margin-top:12px; }
+    .summary-grid { display:grid; grid-template-columns:repeat(5,minmax(0,1fr)); gap:10px; margin-top:12px; }
     .summary-item { border:1px solid #e5e7eb; border-radius:10px; padding:12px; }
     .summary-item strong { display:block; font-size:20px; margin-bottom:2px; }
     .notice { border-left:4px solid #60a5fa; background:#eff6ff; padding:10px 12px; border-radius:8px; margin-top:12px; }
@@ -103,7 +103,7 @@
             <strong>2. ID и МЭШ-ID</strong>
             <span class="tag required">обязательно</span>
           </div>
-          <label for="bridgeFile" class="muted">Таблица с полями ID, group_name и tat_edu_id_2025</label>
+          <label for="bridgeFile" class="muted">Таблица с ID и МЭШ-ID либо расширенный сводный CSV с результатами</label>
           <input id="bridgeFile" type="file" accept=".xlsx,.xls,.csv" />
           <p class="muted file-status" id="bridgeFileStatus">Файл не выбран</p>
         </div>
@@ -120,7 +120,7 @@
       </div>
 
       <div class="notice muted">
-        ID обрабатывается как текст, поэтому количество цифр не ограничено. Класс из таблицы результатов переносится без изменения написания.
+        Сначала записи связываются по МЭШ-ID. Если связи нет, расширенный CSV позволяет сопоставить запись по классу и результатам подходящей методики: 7–9 или 10–11 классы. Студенческая методика не используется.
       </div>
 
       <div class="row" style="margin-top:16px;">
@@ -136,6 +136,7 @@
       <div class="summary-grid">
         <div class="summary-item"><strong id="summaryRows">0</strong><span class="muted">строк в протоколе</span></div>
         <div class="summary-item"><strong id="summaryMatched">0</strong><span class="muted">успешно объединено</span></div>
+        <div class="summary-item"><strong id="summaryResultMatches">0</strong><span class="muted">найдено по результатам</span></div>
         <div class="summary-item"><strong id="summaryIssues">0</strong><span class="muted">требуют проверки</span></div>
         <div class="summary-item"><strong id="summaryFiles">0</strong><span class="muted">исходных таблиц</span></div>
       </div>
@@ -266,7 +267,10 @@
           id: ['id'],
           mesh: ['tat edu id 2025', 'tatar edu id 2025', 'tad yedu id 2025', 'мэш id', 'mesh id'],
           className: ['group name', 'группа класс', 'класс'],
-          gender: ['gender alias', 'gender', 'пол']
+          gender: ['gender alias', 'gender', 'пол'],
+          firstName: ['name', 'имя'],
+          lastName: ['surname', 'фамилия'],
+          patronymic: ['patron', 'patronymic', 'отчество']
         },
         required: ['id', 'mesh'],
         labels: { id: 'ID', mesh: 'tat_edu_id_2025' }
@@ -275,7 +279,12 @@
         fields: {
           mesh: ['tat edu id мэш', 'tat edu id mesh', 'tatar edu id mesh', 'tad yedu id mesh', 'мэш id', 'mesh id'],
           className: ['группа класс', 'group name', 'класс'],
-          gender: ['пол', 'gender', 'gender alias']
+          gender: ['пол', 'gender', 'gender alias'],
+          test: ['тест'],
+          risk: ['факторы риска сумма', 'сумма факторов риска'],
+          protection: ['факторы защиты сумма', 'сумма факторов защиты'],
+          control: ['контрольная шкала', 'корректирующая шкала'],
+          category: ['результат']
         },
         required: ['mesh', 'className', 'gender'],
         labels: { mesh: 'TAD Yedu ID МЭШ', className: 'Группа / класс', gender: 'Пол' }
@@ -304,7 +313,7 @@
         if (exact !== -1) return exact;
       }
       for (const candidate of normalizedCandidates) {
-        if (candidate === 'id' || candidate === 'номер') continue;
+        if (candidate === 'id' || candidate === 'номер' || candidate === 'name') continue;
         const partial = normalized.findIndex(header => header.includes(candidate));
         if (partial !== -1) return partial;
       }
@@ -362,7 +371,8 @@
         sheetName: best.sheetName,
         headers: best.headers,
         columns: best.columns,
-        rows
+        rows,
+        methodProfiles: type === 'bridge' ? detectBridgeMethodProfiles(best.headers) : {}
       };
     }
 
@@ -405,7 +415,8 @@
         try {
           const table = await readMergeTable(file, type);
           mergeTables[type] = table;
-          statusElement.textContent = `Готово: ${table.rows.length} строк, лист «${table.sheetName}»`;
+          const hasResultProfiles = type === 'bridge' && Object.keys(table.methodProfiles).length > 0;
+          statusElement.textContent = `Готово: ${table.rows.length} строк, лист «${table.sheetName}»${hasResultProfiles ? ', результаты методик распознаны' : ''}`;
           statusElement.className = 'muted file-status status-ok';
         } catch (error) {
           mergeTables[type] = null;
@@ -470,6 +481,154 @@
       });
     }
 
+    function normalizeClassJoinKey(value) {
+      const latinToCyrillic = { A:'А', B:'В', C:'С', E:'Е', H:'Н', K:'К', M:'М', O:'О', P:'Р', T:'Т', X:'Х', Y:'У' };
+      return cleanText(value)
+        .toUpperCase()
+        .replace(/[‐‑‒–—−]/g, '-')
+        .replace(/\s+/g, '')
+        .replace(/[ABCEHKMOPTXY]/g, char => latinToCyrillic[char] || char);
+    }
+
+    function getGradeNumber(className) {
+      const match = cleanText(className).match(/\d{1,2}/);
+      return match ? Number(match[0]) : null;
+    }
+
+    function expectedMethodId(className) {
+      const grade = getGradeNumber(className);
+      if (grade >= 7 && grade <= 9) return 8;
+      if (grade >= 10 && grade <= 11) return 10;
+      return null;
+    }
+
+    function normalizeScaleCode(value) {
+      const latinToCyrillic = { A:'А', B:'В', C:'С', E:'Е', H:'Н', K:'К', M:'М', O:'О', P:'Р', T:'Т', X:'Х', Y:'У' };
+      return cleanText(value)
+        .toUpperCase()
+        .replace(/[ABCEHKMOPTXY]/g, char => latinToCyrillic[char] || char)
+        .replace(/[^А-ЯA-Z0-9]/g, '');
+    }
+
+    function detectBridgeMethodProfiles(headers) {
+      const definitions = [
+        { id: 8, title: 'Для обучающихся 7-9 классов [ID 8]' },
+        { id: 10, title: 'Для обучающихся 10-11 классов [ID 10]' }
+      ];
+      const normalizedHeaders = headers.map(normalizeHeader);
+      const profiles = {};
+
+      for (const definition of definitions) {
+        const prefix = normalizeHeader(definition.title);
+        const profile = { methodId: definition.id, risk: -1, protection: -1, control: -1, category: -1, scales: {} };
+        normalizedHeaders.forEach((header, index) => {
+          if (!header.startsWith(prefix)) return;
+          const rest = header.slice(prefix.length).trim();
+          if (rest === 'фактор риска') profile.risk = index;
+          else if (rest === 'фактор защиты') profile.protection = index;
+          else if (rest === 'корректирующая шкала' || rest === 'контрольная шкала') profile.control = index;
+          else if (rest === 'результат') profile.category = index;
+          else if (/\s+стен$/.test(rest)) {
+            const code = normalizeScaleCode(rest.replace(/\s+стен$/, ''));
+            if (code) profile.scales[code] = index;
+          }
+        });
+        if ([profile.risk, profile.protection, profile.control, profile.category].every(index => index >= 0)) {
+          profiles[definition.id] = profile;
+        }
+      }
+      return profiles;
+    }
+
+    function getResultFingerprintSpec(results) {
+      if (!results) return null;
+      const { risk, protection, control, category } = results.columns;
+      if ([risk, protection, control, category].some(index => index < 0)) return null;
+      const scaleColumns = [];
+      for (let index = category + 1; index < results.headers.length && scaleColumns.length < 16; index++) {
+        const scaleName = normalizeHeader(results.headers[index]).replace(/\s+стен(?:а)?$/, '').trim();
+        const code = normalizeScaleCode(scaleName);
+        if (code) scaleColumns.push({ code, index });
+      }
+      return scaleColumns.length === 16 ? { risk, protection, control, category, scaleColumns } : null;
+    }
+
+    function getResultMethodId(resultRow, results) {
+      const test = displayCell(resultRow, results?.columns?.test ?? -1);
+      const match = test.match(/#\s*(8|10|11)\b/i) || normalizeHeader(test).match(/\bid\s*(8|10|11)\b/);
+      return match ? Number(match[1]) : expectedMethodId(displayCell(resultRow, results?.columns?.className ?? -1));
+    }
+
+    function isResultRowEligible(resultRow, results) {
+      const actualMethod = getResultMethodId(resultRow, results);
+      const expectedMethod = expectedMethodId(displayCell(resultRow, results.columns.className));
+      if (actualMethod === 11) return false;
+      if (actualMethod && expectedMethod && actualMethod !== expectedMethod) return false;
+      return true;
+    }
+
+    function normalizeFingerprintValue(value) {
+      const text = cleanText(value).replace(/[‐‑‒–—−]/g, '-');
+      if (!text) return '';
+      if (text !== '-') {
+        const number = Number(text.replace(',', '.'));
+        if (Number.isFinite(number)) return String(number);
+      }
+      return text.toLowerCase().replace(/\s+/g, ' ');
+    }
+
+    function buildResultFingerprintKey(resultRow, results, spec) {
+      if (!spec || !isResultRowEligible(resultRow, results)) return '';
+      const classKey = normalizeClassJoinKey(displayCell(resultRow, results.columns.className));
+      const methodId = getResultMethodId(resultRow, results) || expectedMethodId(classKey);
+      if (!classKey || !methodId || methodId === 11 || !displayCell(resultRow, spec.category)) return '';
+      const summaryValues = [
+        displayCell(resultRow, spec.risk),
+        displayCell(resultRow, spec.protection),
+        displayCell(resultRow, spec.control),
+        displayCell(resultRow, spec.category)
+      ].map(normalizeFingerprintValue);
+      if (summaryValues.some(value => value === '')) return '';
+      const values = [
+        ...summaryValues,
+        ...spec.scaleColumns.map(scale => displayCell(resultRow, scale.index))
+      ].map(normalizeFingerprintValue);
+      return `${classKey}|${methodId}|${values.join('|')}`;
+    }
+
+    function buildBridgeFingerprintKey(bridgeRow, bridge, spec) {
+      if (!spec || !bridgeRow) return '';
+      const className = displayCell(bridgeRow, bridge.columns.className);
+      const classKey = normalizeClassJoinKey(className);
+      const methodId = expectedMethodId(className);
+      const profile = bridge.methodProfiles?.[methodId];
+      if (!classKey || !methodId || !profile || !displayCell(bridgeRow, profile.category)) return '';
+      const summaryValues = [
+        displayCell(bridgeRow, profile.risk),
+        displayCell(bridgeRow, profile.protection),
+        displayCell(bridgeRow, profile.control),
+        displayCell(bridgeRow, profile.category)
+      ].map(normalizeFingerprintValue);
+      if (summaryValues.some(value => value === '')) return '';
+      const values = [
+        ...summaryValues,
+        ...spec.scaleColumns.map(scale => {
+          const column = profile.scales[scale.code];
+          return column == null ? '-' : displayCell(bridgeRow, column);
+        })
+      ].map(normalizeFingerprintValue);
+      return `${classKey}|${methodId}|${values.join('|')}`;
+    }
+
+    function bridgeFio(bridgeRow, bridge) {
+      if (!bridgeRow) return '';
+      return [
+        displayCell(bridgeRow, bridge.columns.lastName),
+        displayCell(bridgeRow, bridge.columns.firstName),
+        displayCell(bridgeRow, bridge.columns.patronymic)
+      ].filter(Boolean).join(' ');
+    }
+
     function buildMergedProtocol() {
       const people = mergeTables.people;
       const bridge = mergeTables.bridge;
@@ -478,7 +637,19 @@
       const bridgeById = buildRowIndex(bridge, bridge.columns.id, normalizeId);
       const bridgeByMesh = buildRowIndex(bridge, bridge.columns.mesh, normalizeMeshId);
       const peopleById = people ? buildRowIndex(people, people.columns.id, normalizeId) : new Map();
-      const resultsByMesh = results ? buildRowIndex(results, results.columns.mesh, normalizeMeshId) : new Map();
+      const resultFingerprintSpec = getResultFingerprintSpec(results);
+      const eligibleResults = results ? results.rows.filter(row => isResultRowEligible(row, results)) : [];
+      const ignoredResults = results ? results.rows.length - eligibleResults.length : 0;
+      const resultsByMesh = results ? buildRowIndex({ rows: eligibleResults }, results.columns.mesh, normalizeMeshId) : new Map();
+      const resultsByFingerprint = new Map();
+      if (results && resultFingerprintSpec) {
+        for (const resultRow of eligibleResults) {
+          const key = buildResultFingerprintKey(resultRow, results, resultFingerprintSpec);
+          if (!key) continue;
+          if (!resultsByFingerprint.has(key)) resultsByFingerprint.set(key, []);
+          resultsByFingerprint.get(key).push(resultRow);
+        }
+      }
       const usedBridge = new Set();
       const usedResults = new Set();
 
@@ -488,7 +659,7 @@
       const outputRows = [];
 
       function createOutputRow(personRow, bridgeRow, resultRow, status) {
-        const fio = personRow ? displayCell(personRow, people.columns.fio) : '';
+        const fio = (personRow ? displayCell(personRow, people.columns.fio) : '') || bridgeFio(bridgeRow, bridge);
         const id = personRow
           ? displayCell(personRow, people.columns.id)
           : displayCell(bridgeRow, bridge.columns.id);
@@ -508,32 +679,48 @@
       }
 
       function attachResult(bridgeRow, issues) {
-        if (!results || !bridgeRow) return null;
+        if (!results || !bridgeRow) return { row: null, matchType: '' };
         const meshKey = normalizeMeshId(displayCell(bridgeRow, bridge.columns.mesh));
         if (meshKey && (bridgeByMesh.get(meshKey) || []).length > 1) {
           issues.push('Дубликат МЭШ-ID в таблице 2');
         }
-        const found = findOne(
-          resultsByMesh,
-          meshKey,
-          'Нет соответствия в таблице 3 по МЭШ-ID',
-          'Дубликат МЭШ-ID в таблице 3'
-        );
-        if (found.issue) issues.push(found.issue);
-        if (found.row) {
-          usedResults.add(found.row);
+        const meshMatches = meshKey ? (resultsByMesh.get(meshKey) || []) : [];
+        let foundRow = meshMatches.length === 1 ? meshMatches[0] : null;
+        let matchType = foundRow ? 'mesh' : '';
+        const fingerprintKey = buildBridgeFingerprintKey(bridgeRow, bridge, resultFingerprintSpec);
+        const fingerprintMatches = fingerprintKey ? (resultsByFingerprint.get(fingerprintKey) || []) : [];
+
+        if (!foundRow && fingerprintMatches.length === 1) {
+          foundRow = fingerprintMatches[0];
+          matchType = 'results';
+        }
+
+        if (!foundRow) {
+          if (fingerprintMatches.length > 1) {
+            issues.push('Неоднозначное совпадение по результатам');
+          } else if (meshMatches.length > 1) {
+            issues.push('Дубликат МЭШ-ID в таблице 3');
+          } else if (fingerprintKey) {
+            issues.push('Нет соответствия в таблице 3 по МЭШ-ID и результатам');
+          } else {
+            issues.push('Нет соответствия в таблице 3 по МЭШ-ID');
+          }
+        }
+
+        if (foundRow) {
+          usedResults.add(foundRow);
           const bridgeClass = displayCell(bridgeRow, bridge.columns.className);
-          const resultClass = displayCell(found.row, results.columns.className);
+          const resultClass = displayCell(foundRow, results.columns.className);
           if (bridgeClass && resultClass && bridgeClass !== resultClass) {
             issues.push('Класс в таблицах 2 и 3 различается');
           }
           const bridgeGender = normalizeGender(displayCell(bridgeRow, bridge.columns.gender));
-          const resultGender = normalizeGender(displayCell(found.row, results.columns.gender));
+          const resultGender = normalizeGender(displayCell(foundRow, results.columns.gender));
           if (bridgeGender && resultGender && bridgeGender !== resultGender) {
             issues.push('Пол в таблицах 2 и 3 различается');
           }
         }
-        return found.row;
+        return { row: foundRow, matchType };
       }
 
       if (people) {
@@ -551,40 +738,43 @@
           );
           if (foundBridge.issue) issues.push(foundBridge.issue);
           if (foundBridge.row) usedBridge.add(foundBridge.row);
-          const resultRow = attachResult(foundBridge.row, issues);
-          const success = results ? 'Объединено по ID и МЭШ-ID' : 'Объединено по ID';
-          createOutputRow(personRow, foundBridge.row, resultRow, issues.length ? issues.join('; ') : success);
+          const resultMatch = attachResult(foundBridge.row, issues);
+          const success = results
+            ? (resultMatch.matchType === 'results' ? 'Объединено по ID и результатам' : 'Объединено по ID и МЭШ-ID')
+            : 'Объединено по ID';
+          createOutputRow(personRow, foundBridge.row, resultMatch.row, issues.length ? issues.join('; ') : success);
         }
 
         for (const bridgeRow of bridge.rows) {
           if (usedBridge.has(bridgeRow)) continue;
           const issues = ['Нет соответствия в таблице 1 по ID'];
-          const resultRow = attachResult(bridgeRow, issues);
-          createOutputRow(null, bridgeRow, resultRow, issues.join('; '));
+          const resultMatch = attachResult(bridgeRow, issues);
+          createOutputRow(null, bridgeRow, resultMatch.row, issues.join('; '));
         }
       } else {
         for (const bridgeRow of bridge.rows) {
           const issues = [];
           usedBridge.add(bridgeRow);
-          const resultRow = attachResult(bridgeRow, issues);
+          const resultMatch = attachResult(bridgeRow, issues);
           createOutputRow(
             null,
             bridgeRow,
-            resultRow,
-            issues.length ? issues.join('; ') : 'Объединено по МЭШ-ID'
+            resultMatch.row,
+            issues.length ? issues.join('; ') : (resultMatch.matchType === 'results' ? 'Объединено по результатам' : 'Объединено по МЭШ-ID')
           );
         }
       }
 
       if (results) {
-        for (const resultRow of results.rows) {
+        for (const resultRow of eligibleResults) {
           if (usedResults.has(resultRow)) continue;
-          createOutputRow(null, null, resultRow, 'Нет соответствия в таблице 2 по МЭШ-ID');
+          createOutputRow(null, null, resultRow, 'Нет соответствия в таблице 2 по МЭШ-ID и результатам');
         }
       }
 
       const matched = outputRows.filter(row => String(row[row.length - 1]).startsWith('Объединено')).length;
-      return { aoa: [headers, ...outputRows], matched, issues: outputRows.length - matched };
+      const matchedByResults = outputRows.filter(row => String(row[row.length - 1]).startsWith('Объединено') && String(row[row.length - 1]).includes('результатам')).length;
+      return { aoa: [headers, ...outputRows], matched, matchedByResults, ignoredResults, issues: outputRows.length - matched };
     }
 
     function createMergeWorksheet(aoa) {
@@ -616,15 +806,17 @@
         renderTablePreview(mergePreviewTable, result.aoa, 40);
         document.getElementById('summaryRows').textContent = result.aoa.length - 1;
         document.getElementById('summaryMatched').textContent = result.matched;
+        document.getElementById('summaryResultMatches').textContent = result.matchedByResults;
         document.getElementById('summaryIssues').textContent = result.issues;
         document.getElementById('summaryFiles').textContent = Object.values(mergeTables).filter(Boolean).length;
         mergeSummary.hidden = false;
         mergePreviewCard.hidden = false;
         downloadMergeBtn.disabled = false;
         sendToDecodeBtn.disabled = !mergeTables.results;
+        const ignoredText = result.ignoredResults ? ` Неподходящих методик пропущено: ${result.ignoredResults}.` : '';
         mergeStatus.textContent = result.issues
-          ? `Протокол создан. Строк, требующих проверки: ${result.issues}.`
-          : 'Протокол создан. Все строки успешно объединены.';
+          ? `Протокол создан. По результатам найдено: ${result.matchedByResults}. Строк, требующих проверки: ${result.issues}.${ignoredText}`
+          : `Протокол создан. Все строки успешно объединены. По результатам найдено: ${result.matchedByResults}.${ignoredText}`;
       } catch (error) {
         mergeStatus.textContent = error?.message || 'Не удалось создать сводный протокол.';
         downloadMergeBtn.disabled = true;
