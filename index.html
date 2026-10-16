@@ -126,6 +126,7 @@
       <div class="row" style="margin-top:16px;">
         <button class="primary" id="mergeBtn" disabled>Создать сводный протокол</button>
         <button class="secondary" id="downloadMergeBtn" disabled>Скачать XLSX</button>
+        <button class="secondary" id="sendToDecodeBtn" disabled>Передать в расшифровку</button>
       </div>
       <p class="muted" id="mergeStatus">Загрузите таблицу 2 и хотя бы одну из таблиц 1 или 3.</p>
     </div>
@@ -216,6 +217,7 @@
     let interpretationMap = {};
 
     let mergeWorkbookOut = null;
+    let mergedProtocolResult = null;
     const mergeTables = { people: null, bridge: null, results: null };
 
     const tabButtons = Array.from(document.querySelectorAll('.tab-button'));
@@ -244,6 +246,7 @@
     const resultsFileStatus = document.getElementById('resultsFileStatus');
     const mergeBtn = document.getElementById('mergeBtn');
     const downloadMergeBtn = document.getElementById('downloadMergeBtn');
+    const sendToDecodeBtn = document.getElementById('sendToDecodeBtn');
     const mergeStatus = document.getElementById('mergeStatus');
     const mergeSummary = document.getElementById('mergeSummary');
     const mergePreviewCard = document.getElementById('mergePreviewCard');
@@ -365,7 +368,9 @@
 
     function resetMergeOutput() {
       mergeWorkbookOut = null;
+      mergedProtocolResult = null;
       downloadMergeBtn.disabled = true;
+      sendToDecodeBtn.disabled = true;
       mergeSummary.hidden = true;
       mergePreviewCard.hidden = true;
       mergePreviewTable.innerHTML = '';
@@ -594,6 +599,7 @@
         const workbook = XLSX.utils.book_new();
         XLSX.utils.book_append_sheet(workbook, worksheet, 'Сводный протокол');
         mergeWorkbookOut = workbook;
+        mergedProtocolResult = result;
 
         renderTablePreview(mergePreviewTable, result.aoa, 40);
         document.getElementById('summaryRows').textContent = result.aoa.length - 1;
@@ -603,17 +609,93 @@
         mergeSummary.hidden = false;
         mergePreviewCard.hidden = false;
         downloadMergeBtn.disabled = false;
+        sendToDecodeBtn.disabled = !mergeTables.results;
         mergeStatus.textContent = result.issues
           ? `Протокол создан. Строк, требующих проверки: ${result.issues}.`
           : 'Протокол создан. Все строки успешно объединены.';
       } catch (error) {
         mergeStatus.textContent = error?.message || 'Не удалось создать сводный протокол.';
         downloadMergeBtn.disabled = true;
+        sendToDecodeBtn.disabled = true;
       }
     });
 
     downloadMergeBtn.addEventListener('click', () => {
       if (mergeWorkbookOut) XLSX.writeFile(mergeWorkbookOut, 'Сводный_протокол.xlsx');
+    });
+
+    function buildDecodeInputFromMergedProtocol(result) {
+      const resultTable = mergeTables.results;
+      if (!resultTable) throw new Error('Для расшифровки нужна таблица 3 с результатами.');
+
+      const resultHeaders = result.aoa[0].slice(5, -1);
+      const requiredColumns = {
+        risk: findHeaderIndex(resultHeaders, ['факторы риска сумма', 'сумма факторов риска']),
+        protection: findHeaderIndex(resultHeaders, ['факторы защиты сумма', 'сумма факторов защиты']),
+        control: findHeaderIndex(resultHeaders, ['контрольная шкала']),
+        category: findHeaderIndex(resultHeaders, ['результат'])
+      };
+      const missing = Object.values(requiredColumns).some(index => index === -1);
+      if (missing) {
+        throw new Error('В таблице результатов не найдены итоговые столбцы, необходимые для расшифровки.');
+      }
+
+      const scaleHeaders = resultHeaders.slice(requiredColumns.category + 1, requiredColumns.category + 17);
+      if (scaleHeaders.length < 16) {
+        throw new Error('После столбца «Результат» найдено меньше 16 шкал.');
+      }
+
+      const decodeHeaders = [
+        'Группа / класс',
+        'ФИО / МЭШ-ID',
+        resultHeaders[requiredColumns.risk],
+        resultHeaders[requiredColumns.protection],
+        resultHeaders[requiredColumns.control],
+        resultHeaders[requiredColumns.category],
+        ...scaleHeaders
+      ];
+
+      const decodeRows = result.aoa.slice(1).map(row => {
+        const resultValues = row.slice(5, -1);
+        const person = cleanText(row[0]) || cleanText(row[2]);
+        return [
+          row[3] ?? '',
+          person,
+          resultValues[requiredColumns.risk] ?? '',
+          resultValues[requiredColumns.protection] ?? '',
+          resultValues[requiredColumns.control] ?? '',
+          resultValues[requiredColumns.category] ?? '',
+          ...resultValues.slice(requiredColumns.category + 1, requiredColumns.category + 17)
+        ];
+      });
+
+      return [decodeHeaders, ...decodeRows];
+    }
+
+    function activateTab(name) {
+      for (const button of tabButtons) {
+        const isActive = button.dataset.tab === name;
+        button.classList.toggle('active', isActive);
+        button.setAttribute('aria-selected', String(isActive));
+      }
+      for (const [panelName, panel] of Object.entries(tabPanels)) panel.hidden = panelName !== name;
+    }
+
+    sendToDecodeBtn.addEventListener('click', () => {
+      if (!mergedProtocolResult) return;
+      try {
+        const decodeAOA = buildDecodeInputFromMergedProtocol(mergedProtocolResult);
+        originalAOA = decodeAOA;
+        workbookOut = null;
+        processBtn.disabled = false;
+        downloadBtn.disabled = true;
+        previewTable.innerHTML = '';
+        statusEl.textContent = `Сводный протокол передан: ${decodeAOA.length - 1} строк. Выберите параметры и нажмите «Обработать».`;
+        activateTab('decode');
+        document.getElementById('decodeTab').scrollIntoView({ behavior: 'smooth', block: 'start' });
+      } catch (error) {
+        mergeStatus.textContent = error?.message || 'Не удалось передать данные в расшифровку.';
+      }
     });
 
     function renderTablePreview(tableElement, aoa, maxRows) {
