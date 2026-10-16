@@ -5,13 +5,15 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Обработка результатов СПТ</title>
   <style>
-    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; margin: 24px; position: relative; }
-    h1 { font-size: 22px; margin: 0 0 12px; }
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; margin: 24px; position: relative; color: #111827; }
+    h1 { font-size: 22px; margin: 0 0 16px; }
+    h2 { font-size: 17px; margin: 0 0 8px; }
     .card { border: 1px solid #e5e7eb; border-radius: 12px; padding: 16px; box-shadow: 0 3px 10px rgba(0,0,0,.06); margin-bottom: 16px; }
 
     label { display:block; margin-bottom: 8px; font-weight: 600; }
     input[type=file] { padding: 10px; border: 1px solid #ddd; border-radius: 8px; width: 100%; max-width: 420px; }
     button { padding: 10px 14px; border: 0; border-radius: 10px; cursor: pointer; margin-right: 8px; }
+    button:disabled { cursor: not-allowed; opacity: .55; }
     button.primary { background: #111827; color: white; }
     button.secondary { background: #f3f4f6; }
 
@@ -21,7 +23,7 @@
     table { border-collapse: collapse; width: 100%; overflow: auto; }
     th, td { border: 1px solid #e5e7eb; padding: 6px 8px; font-size: 12px; text-align: left; vertical-align: top; }
     th { background: #f9fafb; position: sticky; top: 0; }
-    #previewWrap { max-height: 420px; overflow: auto; border: 1px solid #eee; border-radius: 12px; }
+    #previewWrap, #mergePreviewWrap { max-height: 420px; overflow: auto; border: 1px solid #eee; border-radius: 12px; }
 
     footer { font-size: 11px; color: #6b7280; text-align: center; margin-top: 40px; border-top: 1px solid #e5e7eb; padding-top: 10px; }
 
@@ -35,6 +37,34 @@
       margin-top: 18px;
     }
     .small-check input { transform: translateY(1px) scale(0.92); }
+
+    .tabs { display:flex; gap:8px; border-bottom:1px solid #d1d5db; margin-bottom:20px; }
+    .tab-button { margin:0 0 -1px; border:1px solid transparent; border-radius:10px 10px 0 0; background:transparent; color:#4b5563; font-weight:700; }
+    .tab-button:hover { background:#f9fafb; color:#111827; }
+    .tab-button.active { background:white; color:#111827; border-color:#d1d5db; border-bottom-color:white; }
+    .tab-panel[hidden] { display:none; }
+
+    .upload-grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:12px; margin-top:14px; }
+    .upload-card { border:1px solid #e5e7eb; border-radius:10px; padding:14px; background:#fafafa; }
+    .upload-card input[type=file] { width:100%; max-width:none; box-sizing:border-box; background:white; }
+    .upload-title { display:flex; justify-content:space-between; gap:8px; align-items:flex-start; margin-bottom:8px; }
+    .upload-title strong { font-size:14px; }
+    .tag { display:inline-block; padding:2px 7px; border-radius:999px; background:#e5e7eb; color:#374151; font-size:11px; white-space:nowrap; }
+    .tag.required { background:#dbeafe; color:#1d4ed8; }
+    .file-status { margin:8px 0 0; min-height:30px; }
+    .status-ok { color:#047857; }
+    .status-error { color:#b91c1c; }
+    .merge-help { margin:0; padding-left:20px; }
+    .summary-grid { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:10px; margin-top:12px; }
+    .summary-item { border:1px solid #e5e7eb; border-radius:10px; padding:12px; }
+    .summary-item strong { display:block; font-size:20px; margin-bottom:2px; }
+    .notice { border-left:4px solid #60a5fa; background:#eff6ff; padding:10px 12px; border-radius:8px; margin-top:12px; }
+
+    @media (max-width: 850px) {
+      .upload-grid, .summary-grid { grid-template-columns:1fr; }
+      .tabs { overflow-x:auto; }
+      .tab-button { white-space:nowrap; }
+    }
   </style>
 
   <!-- SheetJS -->
@@ -43,6 +73,81 @@
 
 <body>
   <h1>Обработка результатов СПТ</h1>
+
+  <nav class="tabs" aria-label="Разделы сайта">
+    <button class="tab-button active" type="button" data-tab="merge" aria-selected="true">Сводный протокол</button>
+    <button class="tab-button" type="button" data-tab="decode" aria-selected="false">Расшифровка результатов</button>
+  </nav>
+
+  <section class="tab-panel" id="mergeTab">
+    <div class="card">
+      <h2>Создание сводного протокола</h2>
+      <p class="muted" style="font-size:13px;">
+        Таблица с ID связывает ФИО с результатами: с первой таблицей — по ID, с третьей — по МЭШ-ID.
+        Можно загрузить таблицы 1 + 2, таблицы 2 + 3 или все три.
+      </p>
+
+      <div class="upload-grid">
+        <div class="upload-card">
+          <div class="upload-title">
+            <strong>1. ФИО и ID</strong>
+            <span class="tag">необязательно</span>
+          </div>
+          <label for="peopleFile" class="muted">Таблица с ФИО и шестизначным номером</label>
+          <input id="peopleFile" type="file" accept=".xlsx,.xls,.csv" />
+          <p class="muted file-status" id="peopleFileStatus">Файл не выбран</p>
+        </div>
+
+        <div class="upload-card">
+          <div class="upload-title">
+            <strong>2. ID и МЭШ-ID</strong>
+            <span class="tag required">обязательно</span>
+          </div>
+          <label for="bridgeFile" class="muted">Таблица с полями ID, group_name и tat_edu_id_2025</label>
+          <input id="bridgeFile" type="file" accept=".xlsx,.xls,.csv" />
+          <p class="muted file-status" id="bridgeFileStatus">Файл не выбран</p>
+        </div>
+
+        <div class="upload-card">
+          <div class="upload-title">
+            <strong>3. Результаты</strong>
+            <span class="tag">необязательно</span>
+          </div>
+          <label for="resultsFile" class="muted">Таблица с МЭШ-ID, классом, полом и результатами</label>
+          <input id="resultsFile" type="file" accept=".xlsx,.xls,.csv" />
+          <p class="muted file-status" id="resultsFileStatus">Файл не выбран</p>
+        </div>
+      </div>
+
+      <div class="notice muted">
+        ID обрабатывается как текст, поэтому количество цифр не ограничено. Класс из таблицы результатов переносится без изменения написания.
+      </div>
+
+      <div class="row" style="margin-top:16px;">
+        <button class="primary" id="mergeBtn" disabled>Создать сводный протокол</button>
+        <button class="secondary" id="downloadMergeBtn" disabled>Скачать XLSX</button>
+      </div>
+      <p class="muted" id="mergeStatus">Загрузите таблицу 2 и хотя бы одну из таблиц 1 или 3.</p>
+    </div>
+
+    <div class="card" id="mergeSummary" hidden>
+      <h2>Результат объединения</h2>
+      <div class="summary-grid">
+        <div class="summary-item"><strong id="summaryRows">0</strong><span class="muted">строк в протоколе</span></div>
+        <div class="summary-item"><strong id="summaryMatched">0</strong><span class="muted">успешно объединено</span></div>
+        <div class="summary-item"><strong id="summaryIssues">0</strong><span class="muted">требуют проверки</span></div>
+        <div class="summary-item"><strong id="summaryFiles">0</strong><span class="muted">исходных таблиц</span></div>
+      </div>
+    </div>
+
+    <div class="card" id="mergePreviewCard" hidden>
+      <h2>Превью сводного протокола</h2>
+      <p class="muted">Показаны первые 40 строк. Полный результат попадёт в скачиваемый файл.</p>
+      <div id="mergePreviewWrap"><table id="mergePreviewTable"></table></div>
+    </div>
+  </section>
+
+  <section class="tab-panel" id="decodeTab" hidden>
 
   <div class="card" style="margin-bottom:20px;">
     <div class="muted" style="margin-bottom:6px;">
@@ -99,6 +204,7 @@
     <h2 style="font-size:16px;margin:0 0 8px;">Превью (первые строки после обработки)</h2>
     <div id="previewWrap"><table id="previewTable"></table></div>
   </div>
+  </section>
 
   <footer>
     by LanternARC. Все права защищены. Данный сайт не хранит и не передает данные, указанные в загружаемых таблицах.
@@ -108,6 +214,421 @@
     let originalAOA = null;
     let workbookOut = null;
     let interpretationMap = {};
+
+    let mergeWorkbookOut = null;
+    const mergeTables = { people: null, bridge: null, results: null };
+
+    const tabButtons = Array.from(document.querySelectorAll('.tab-button'));
+    const tabPanels = {
+      merge: document.getElementById('mergeTab'),
+      decode: document.getElementById('decodeTab')
+    };
+
+    for (const button of tabButtons) {
+      button.addEventListener('click', () => {
+        const activeTab = button.dataset.tab;
+        for (const candidate of tabButtons) {
+          const isActive = candidate === button;
+          candidate.classList.toggle('active', isActive);
+          candidate.setAttribute('aria-selected', String(isActive));
+        }
+        for (const [name, panel] of Object.entries(tabPanels)) panel.hidden = name !== activeTab;
+      });
+    }
+
+    const peopleFile = document.getElementById('peopleFile');
+    const bridgeFile = document.getElementById('bridgeFile');
+    const resultsFile = document.getElementById('resultsFile');
+    const peopleFileStatus = document.getElementById('peopleFileStatus');
+    const bridgeFileStatus = document.getElementById('bridgeFileStatus');
+    const resultsFileStatus = document.getElementById('resultsFileStatus');
+    const mergeBtn = document.getElementById('mergeBtn');
+    const downloadMergeBtn = document.getElementById('downloadMergeBtn');
+    const mergeStatus = document.getElementById('mergeStatus');
+    const mergeSummary = document.getElementById('mergeSummary');
+    const mergePreviewCard = document.getElementById('mergePreviewCard');
+    const mergePreviewTable = document.getElementById('mergePreviewTable');
+
+    const mergeSchemas = {
+      people: {
+        fields: {
+          fio: ['фио', 'ф и о', 'фамилия имя отчество', 'full name'],
+          id: ['id', 'шестизначный id', 'шестизначный номер', 'идентификатор', 'tat edu id', 'tatar edu id', 'tad yedu id']
+        },
+        required: ['fio', 'id'],
+        labels: { fio: 'ФИО', id: 'ID' }
+      },
+      bridge: {
+        fields: {
+          id: ['id'],
+          mesh: ['tat edu id 2025', 'tatar edu id 2025', 'tad yedu id 2025', 'мэш id', 'mesh id'],
+          className: ['group name', 'группа класс', 'класс'],
+          gender: ['gender alias', 'gender', 'пол']
+        },
+        required: ['id', 'mesh'],
+        labels: { id: 'ID', mesh: 'tat_edu_id_2025' }
+      },
+      results: {
+        fields: {
+          mesh: ['tat edu id мэш', 'tat edu id mesh', 'tatar edu id mesh', 'tad yedu id mesh', 'мэш id', 'mesh id'],
+          className: ['группа класс', 'group name', 'класс'],
+          gender: ['пол', 'gender', 'gender alias']
+        },
+        required: ['mesh', 'className', 'gender'],
+        labels: { mesh: 'TAD Yedu ID МЭШ', className: 'Группа / класс', gender: 'Пол' }
+      }
+    };
+
+    function cleanText(value) {
+      return String(value ?? '').replace(/\u00a0/g, ' ').trim();
+    }
+
+    function normalizeHeader(value) {
+      return cleanText(value)
+        .toLowerCase()
+        .replace(/ё/g, 'е')
+        .replace(/[_\\/.-]+/g, ' ')
+        .replace(/[^a-zа-я0-9]+/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+    }
+
+    function findHeaderIndex(headers, candidates) {
+      const normalized = headers.map(normalizeHeader);
+      const normalizedCandidates = candidates.map(normalizeHeader);
+      for (const candidate of normalizedCandidates) {
+        const exact = normalized.indexOf(candidate);
+        if (exact !== -1) return exact;
+      }
+      for (const candidate of normalizedCandidates) {
+        if (candidate === 'id' || candidate === 'номер') continue;
+        const partial = normalized.findIndex(header => header.includes(candidate));
+        if (partial !== -1) return partial;
+      }
+      return -1;
+    }
+
+    function detectColumns(headers, type) {
+      const schema = mergeSchemas[type];
+      const columns = {};
+      for (const [field, candidates] of Object.entries(schema.fields)) {
+        columns[field] = findHeaderIndex(headers, candidates);
+      }
+      const missing = schema.required.filter(field => columns[field] === -1);
+      const score = Object.values(columns).filter(index => index !== -1).length + (schema.required.length - missing.length) * 3;
+      return { columns, missing, score };
+    }
+
+    async function readMergeTable(file, type) {
+      const data = await file.arrayBuffer();
+      const workbook = XLSX.read(data, { type: 'array', cellDates: true });
+      let best = null;
+
+      for (const sheetName of workbook.SheetNames) {
+        const worksheet = workbook.Sheets[sheetName];
+        const displayRows = XLSX.utils.sheet_to_json(worksheet, { header: 1, defval: '', raw: false });
+        const limit = Math.min(displayRows.length, 20);
+        for (let rowIndex = 0; rowIndex < limit; rowIndex++) {
+          const headers = displayRows[rowIndex].map(cleanText);
+          while (headers.length && headers[headers.length - 1] === '') headers.pop();
+          const detection = detectColumns(headers, type);
+          if (!best || detection.score > best.score) {
+            best = { sheetName, worksheet, displayRows, headerRow: rowIndex, headers, ...detection };
+          }
+        }
+      }
+
+      if (!best || best.missing.length) {
+        const schema = mergeSchemas[type];
+        const missingLabels = (best?.missing || schema.required).map(field => schema.labels[field] || field);
+        throw new Error(`Не найдены обязательные столбцы: ${missingLabels.join(', ')}`);
+      }
+
+      const rawRows = XLSX.utils.sheet_to_json(best.worksheet, { header: 1, defval: '', raw: true });
+      const rows = [];
+      const maxColumns = best.headers.length;
+      for (let index = best.headerRow + 1; index < Math.max(rawRows.length, best.displayRows.length); index++) {
+        const raw = (rawRows[index] || []).slice(0, maxColumns);
+        const display = (best.displayRows[index] || []).slice(0, maxColumns).map(cleanText);
+        if (!display.some(value => value !== '')) continue;
+        rows.push({ raw, display });
+      }
+
+      return {
+        fileName: file.name,
+        sheetName: best.sheetName,
+        headers: best.headers,
+        columns: best.columns,
+        rows
+      };
+    }
+
+    function resetMergeOutput() {
+      mergeWorkbookOut = null;
+      downloadMergeBtn.disabled = true;
+      mergeSummary.hidden = true;
+      mergePreviewCard.hidden = true;
+      mergePreviewTable.innerHTML = '';
+    }
+
+    function updateMergeAvailability() {
+      const ready = !!mergeTables.bridge && (!!mergeTables.people || !!mergeTables.results);
+      mergeBtn.disabled = !ready;
+      if (ready) {
+        mergeStatus.textContent = 'Таблицы готовы к объединению.';
+      } else if (!mergeTables.bridge) {
+        mergeStatus.textContent = 'Загрузите обязательную таблицу 2 и хотя бы одну из таблиц 1 или 3.';
+      } else {
+        mergeStatus.textContent = 'Добавьте таблицу 1 или таблицу 3.';
+      }
+    }
+
+    function bindMergeFileInput(input, statusElement, type) {
+      input.addEventListener('change', async () => {
+        resetMergeOutput();
+        const file = input.files?.[0];
+        if (!file) {
+          mergeTables[type] = null;
+          statusElement.textContent = 'Файл не выбран';
+          statusElement.className = 'muted file-status';
+          updateMergeAvailability();
+          return;
+        }
+
+        statusElement.textContent = 'Чтение файла...';
+        statusElement.className = 'muted file-status';
+        try {
+          const table = await readMergeTable(file, type);
+          mergeTables[type] = table;
+          statusElement.textContent = `Готово: ${table.rows.length} строк, лист «${table.sheetName}»`;
+          statusElement.className = 'muted file-status status-ok';
+        } catch (error) {
+          mergeTables[type] = null;
+          statusElement.textContent = error?.message || 'Не удалось прочитать файл';
+          statusElement.className = 'muted file-status status-error';
+        }
+        updateMergeAvailability();
+      });
+    }
+
+    bindMergeFileInput(peopleFile, peopleFileStatus, 'people');
+    bindMergeFileInput(bridgeFile, bridgeFileStatus, 'bridge');
+    bindMergeFileInput(resultsFile, resultsFileStatus, 'results');
+
+    function normalizeId(value) {
+      let id = cleanText(value).replace(/\s+/g, '');
+      if (/^\d+[.,]0+$/.test(id)) id = id.replace(/[.,]0+$/, '');
+      return id;
+    }
+
+    function normalizeMeshId(value) {
+      return cleanText(value).toLowerCase().replace(/[{}\s]/g, '');
+    }
+
+    function normalizeGender(value) {
+      const gender = cleanText(value).toLowerCase();
+      if (['male', 'm', 'м', 'муж', 'мужской'].includes(gender)) return 'Мужской';
+      if (['female', 'f', 'ж', 'жен', 'женский'].includes(gender)) return 'Женский';
+      return cleanText(value);
+    }
+
+    function displayCell(row, column) {
+      return column === -1 || !row ? '' : cleanText(row.display[column]);
+    }
+
+    function buildRowIndex(table, column, normalizer) {
+      const index = new Map();
+      for (const row of table?.rows || []) {
+        const key = normalizer(displayCell(row, column));
+        if (!key) continue;
+        if (!index.has(key)) index.set(key, []);
+        index.get(key).push(row);
+      }
+      return index;
+    }
+
+    function findOne(index, key, missingMessage, duplicateMessage) {
+      if (!key) return { row: null, issue: missingMessage };
+      const matches = index.get(key) || [];
+      if (!matches.length) return { row: null, issue: missingMessage };
+      if (matches.length > 1) return { row: null, issue: duplicateMessage };
+      return { row: matches[0], issue: '' };
+    }
+
+    function uniqueHeaders(headers) {
+      const used = new Map();
+      return headers.map(header => {
+        const base = cleanText(header) || 'Без названия';
+        const count = (used.get(base) || 0) + 1;
+        used.set(base, count);
+        return count === 1 ? base : `${base} (${count})`;
+      });
+    }
+
+    function buildMergedProtocol() {
+      const people = mergeTables.people;
+      const bridge = mergeTables.bridge;
+      const results = mergeTables.results;
+
+      const bridgeById = buildRowIndex(bridge, bridge.columns.id, normalizeId);
+      const bridgeByMesh = buildRowIndex(bridge, bridge.columns.mesh, normalizeMeshId);
+      const peopleById = people ? buildRowIndex(people, people.columns.id, normalizeId) : new Map();
+      const resultsByMesh = results ? buildRowIndex(results, results.columns.mesh, normalizeMeshId) : new Map();
+      const usedBridge = new Set();
+      const usedResults = new Set();
+
+      const resultStart = results ? results.columns.gender + 1 : -1;
+      const resultHeaders = results ? uniqueHeaders(results.headers.slice(resultStart)) : [];
+      const headers = ['ФИО', 'ID', 'МЭШ ID', 'Группа / класс', 'Пол', ...resultHeaders, 'Статус объединения'];
+      const outputRows = [];
+
+      function createOutputRow(personRow, bridgeRow, resultRow, status) {
+        const fio = personRow ? displayCell(personRow, people.columns.fio) : '';
+        const id = personRow
+          ? displayCell(personRow, people.columns.id)
+          : displayCell(bridgeRow, bridge.columns.id);
+        const mesh = resultRow
+          ? displayCell(resultRow, results.columns.mesh)
+          : displayCell(bridgeRow, bridge.columns.mesh);
+        const className = resultRow
+          ? displayCell(resultRow, results.columns.className)
+          : displayCell(bridgeRow, bridge.columns.className);
+        const gender = resultRow
+          ? normalizeGender(displayCell(resultRow, results.columns.gender))
+          : normalizeGender(displayCell(bridgeRow, bridge.columns.gender));
+        const resultValues = resultRow
+          ? resultRow.raw.slice(resultStart, resultStart + resultHeaders.length).map(value => value ?? '')
+          : new Array(resultHeaders.length).fill('');
+        outputRows.push([fio, id, mesh, className, gender, ...resultValues, status]);
+      }
+
+      function attachResult(bridgeRow, issues) {
+        if (!results || !bridgeRow) return null;
+        const meshKey = normalizeMeshId(displayCell(bridgeRow, bridge.columns.mesh));
+        if (meshKey && (bridgeByMesh.get(meshKey) || []).length > 1) {
+          issues.push('Дубликат МЭШ-ID в таблице 2');
+        }
+        const found = findOne(
+          resultsByMesh,
+          meshKey,
+          'Нет соответствия в таблице 3 по МЭШ-ID',
+          'Дубликат МЭШ-ID в таблице 3'
+        );
+        if (found.issue) issues.push(found.issue);
+        if (found.row) {
+          usedResults.add(found.row);
+          const bridgeClass = displayCell(bridgeRow, bridge.columns.className);
+          const resultClass = displayCell(found.row, results.columns.className);
+          if (bridgeClass && resultClass && bridgeClass !== resultClass) {
+            issues.push('Класс в таблицах 2 и 3 различается');
+          }
+          const bridgeGender = normalizeGender(displayCell(bridgeRow, bridge.columns.gender));
+          const resultGender = normalizeGender(displayCell(found.row, results.columns.gender));
+          if (bridgeGender && resultGender && bridgeGender !== resultGender) {
+            issues.push('Пол в таблицах 2 и 3 различается');
+          }
+        }
+        return found.row;
+      }
+
+      if (people) {
+        for (const personRow of people.rows) {
+          const issues = [];
+          const idKey = normalizeId(displayCell(personRow, people.columns.id));
+          if (idKey && (peopleById.get(idKey) || []).length > 1) {
+            issues.push('Дубликат ID в таблице 1');
+          }
+          const foundBridge = findOne(
+            bridgeById,
+            idKey,
+            'Нет соответствия в таблице 2 по ID',
+            'Дубликат ID в таблице 2'
+          );
+          if (foundBridge.issue) issues.push(foundBridge.issue);
+          if (foundBridge.row) usedBridge.add(foundBridge.row);
+          const resultRow = attachResult(foundBridge.row, issues);
+          const success = results ? 'Объединено по ID и МЭШ-ID' : 'Объединено по ID';
+          createOutputRow(personRow, foundBridge.row, resultRow, issues.length ? issues.join('; ') : success);
+        }
+
+        for (const bridgeRow of bridge.rows) {
+          if (usedBridge.has(bridgeRow)) continue;
+          const issues = ['Нет соответствия в таблице 1 по ID'];
+          const resultRow = attachResult(bridgeRow, issues);
+          createOutputRow(null, bridgeRow, resultRow, issues.join('; '));
+        }
+      } else {
+        for (const bridgeRow of bridge.rows) {
+          const issues = [];
+          usedBridge.add(bridgeRow);
+          const resultRow = attachResult(bridgeRow, issues);
+          createOutputRow(
+            null,
+            bridgeRow,
+            resultRow,
+            issues.length ? issues.join('; ') : 'Объединено по МЭШ-ID'
+          );
+        }
+      }
+
+      if (results) {
+        for (const resultRow of results.rows) {
+          if (usedResults.has(resultRow)) continue;
+          createOutputRow(null, null, resultRow, 'Нет соответствия в таблице 2 по МЭШ-ID');
+        }
+      }
+
+      const matched = outputRows.filter(row => String(row[row.length - 1]).startsWith('Объединено')).length;
+      return { aoa: [headers, ...outputRows], matched, issues: outputRows.length - matched };
+    }
+
+    mergeBtn.addEventListener('click', () => {
+      try {
+        const result = buildMergedProtocol();
+        const worksheet = XLSX.utils.aoa_to_sheet(result.aoa);
+        worksheet['!autofilter'] = { ref: XLSX.utils.encode_range({ s: { r: 0, c: 0 }, e: { r: result.aoa.length - 1, c: result.aoa[0].length - 1 } }) };
+        worksheet['!cols'] = result.aoa[0].map((header, index) => ({
+          wch: Math.min(42, Math.max(12, String(header).length + 2, index === result.aoa[0].length - 1 ? 32 : 0))
+        }));
+
+        const workbook = XLSX.utils.book_new();
+        XLSX.utils.book_append_sheet(workbook, worksheet, 'Сводный протокол');
+        mergeWorkbookOut = workbook;
+
+        renderTablePreview(mergePreviewTable, result.aoa, 40);
+        document.getElementById('summaryRows').textContent = result.aoa.length - 1;
+        document.getElementById('summaryMatched').textContent = result.matched;
+        document.getElementById('summaryIssues').textContent = result.issues;
+        document.getElementById('summaryFiles').textContent = Object.values(mergeTables).filter(Boolean).length;
+        mergeSummary.hidden = false;
+        mergePreviewCard.hidden = false;
+        downloadMergeBtn.disabled = false;
+        mergeStatus.textContent = result.issues
+          ? `Протокол создан. Строк, требующих проверки: ${result.issues}.`
+          : 'Протокол создан. Все строки успешно объединены.';
+      } catch (error) {
+        mergeStatus.textContent = error?.message || 'Не удалось создать сводный протокол.';
+        downloadMergeBtn.disabled = true;
+      }
+    });
+
+    downloadMergeBtn.addEventListener('click', () => {
+      if (mergeWorkbookOut) XLSX.writeFile(mergeWorkbookOut, 'Сводный_протокол.xlsx');
+    });
+
+    function renderTablePreview(tableElement, aoa, maxRows) {
+      const rows = aoa.slice(0, Math.max(2, maxRows + 1));
+      if (!rows.length) {
+        tableElement.innerHTML = '';
+        return;
+      }
+      let html = '<thead><tr>' + rows[0].map(value => `<th>${escapeHtml(value)}</th>`).join('') + '</tr></thead><tbody>';
+      for (let rowIndex = 1; rowIndex < rows.length; rowIndex++) {
+        html += '<tr>' + rows[rowIndex].map(value => `<td>${escapeHtml(value)}</td>`).join('') + '</tr>';
+      }
+      html += '</tbody>';
+      tableElement.innerHTML = html;
+    }
 
     const fileEl = document.getElementById('file');
     const addInterpToggle = document.getElementById('addInterpToggle');
