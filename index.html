@@ -178,14 +178,12 @@
 
   <!-- 🔹 Требования -->
   <div class="card">
-    <p><strong>Требования к таблице:</strong></p>
+    <p><strong>Какие таблицы можно загружать:</strong></p>
     <ul>
-      <li>Первая строка — шапка таблицы.</li>
-      <li>Столбец A — Группа/класс</li>
-      <li>Столбец B — ФИО/МЭШ-ID</li>
-      <li>Столбцы C, D, E — Факторы риска (сумма), Факторы защиты (сумма), Контрольная шкала</li>
-      <li>Столбец F — Результат (Норма, Высокая вероятность риска, Группа риска)</li>
-      <li>Столбцы G–V — Значения шкал в стенах</li>
+      <li>Порядок столбцов не важен, лишние столбцы можно не удалять.</li>
+      <li>Шапка может находиться в одной из первых 20 строк любого листа.</li>
+      <li>Нужны столбцы с классом, итоговыми суммами, результатом и 16 шкалами в стенах.</li>
+      <li>ФИО, ID и МЭШ ID программа найдёт по названиям и сохранит, если они есть.</li>
     </ul>
   </div>
 
@@ -997,25 +995,229 @@
       return map;
     }
 
+    const decodeScaleCodes = [
+      'ППЗ','ПВГ','ПАУ','СР','ИМ','ТР','ФР','ДЕ',
+      'ПР','ПО','СА','СП','СЭ','АН','ФУ','ДО'
+    ];
+
+    const decodeFieldDefinitions = {
+      className: {
+        candidates: ['группа класс', 'класс', 'group class', 'group name'],
+        label: 'Группа / класс'
+      },
+      fio: {
+        candidates: ['фио', 'ф и о', 'фамилия имя отчество', 'full name'],
+        label: 'ФИО'
+      },
+      id: {
+        candidates: ['id', 'шестизначный id', 'шестизначный номер', 'идентификатор'],
+        label: 'ID'
+      },
+      mesh: {
+        candidates: ['мэш id', 'mesh id', 'tat edu id мэш', 'tat edu id mesh', 'tad yedu id mesh'],
+        label: 'МЭШ ID'
+      },
+      risk: {
+        candidates: ['факторы риска сумма', 'сумма факторов риска', 'фактор риска сумма'],
+        label: 'Факторы риска (сумма)'
+      },
+      protection: {
+        candidates: ['факторы защиты сумма', 'сумма факторов защиты', 'фактор защиты сумма'],
+        label: 'Факторы защиты (сумма)'
+      },
+      control: {
+        candidates: ['контрольная шкала', 'корректирующая шкала'],
+        label: 'Контрольная шкала'
+      },
+      category: {
+        candidates: ['результат', 'категория результата'],
+        label: 'Результат'
+      }
+    };
+
+    function findExactDecodeHeader(headers, candidates) {
+      const normalizedHeaders = headers.map(normalizeHeader);
+      for (const candidate of candidates.map(normalizeHeader)) {
+        const index = normalizedHeaders.indexOf(candidate);
+        if (index !== -1) return index;
+      }
+      return -1;
+    }
+
+    function findDecodeScaleHeader(headers, scaleCode) {
+      const wantedCode = normalizeScaleCode(scaleCode);
+      const normalizedHeaders = headers.map(normalizeHeader);
+
+      for (let index = 0; index < normalizedHeaders.length; index++) {
+        const tokens = normalizedHeaders[index].split(' ').filter(Boolean);
+        const hasCode = tokens.some(token => normalizeScaleCode(token) === wantedCode);
+        const hasSten = tokens.some(token => token.startsWith('стен'));
+        if (hasCode && hasSten) return index;
+      }
+
+      return normalizedHeaders.findIndex(header => normalizeScaleCode(header) === wantedCode);
+    }
+
+    function detectDecodeColumns(headers) {
+      const columns = {};
+      for (const [field, definition] of Object.entries(decodeFieldDefinitions)) {
+        columns[field] = findExactDecodeHeader(headers, definition.candidates);
+      }
+
+      columns.scales = decodeScaleCodes.map(code => findDecodeScaleHeader(headers, code));
+      const requiredFields = ['className', 'risk', 'protection', 'control', 'category'];
+      const missingFields = requiredFields.filter(field => columns[field] === -1);
+      const missingScales = decodeScaleCodes.filter((_, index) => columns.scales[index] === -1);
+      const optionalIdentityCount = ['fio', 'id', 'mesh'].filter(field => columns[field] !== -1).length;
+      const score = (requiredFields.length - missingFields.length) * 4
+        + (decodeScaleCodes.length - missingScales.length) * 2
+        + optionalIdentityCount;
+
+      return {
+        columns,
+        missingFields,
+        missingScales,
+        score,
+        valid: missingFields.length === 0 && missingScales.length === 0
+      };
+    }
+
+    function canonicalizeDecodeTable(best) {
+      const canonicalHeaders = [
+        'Группа / класс', 'ФИО', 'ID', 'МЭШ ID',
+        'Факторы риска (сумма)', 'Факторы защиты (сумма)', 'Контрольная шкала', 'Результат',
+        ...decodeScaleCodes.map(code => `${code} стена`)
+      ];
+      const dataRows = [];
+
+      for (let rowIndex = best.headerRow + 1; rowIndex < Math.max(best.rawRows.length, best.displayRows.length); rowIndex++) {
+        const rawRow = best.rawRows[rowIndex] || [];
+        const displayRow = best.displayRows[rowIndex] || [];
+        const displayAt = index => index < 0 ? '' : cleanText(displayRow[index]);
+        const rawAt = index => index < 0 ? '' : (rawRow[index] ?? '');
+        const row = [
+          displayAt(best.columns.className),
+          displayAt(best.columns.fio),
+          displayAt(best.columns.id),
+          displayAt(best.columns.mesh),
+          rawAt(best.columns.risk),
+          rawAt(best.columns.protection),
+          rawAt(best.columns.control),
+          displayAt(best.columns.category),
+          ...best.columns.scales.map(rawAt)
+        ];
+        if (row.some(value => cleanText(value) !== '')) dataRows.push(row);
+      }
+
+      const usedColumns = new Set([
+        best.columns.className,
+        best.columns.fio,
+        best.columns.id,
+        best.columns.mesh,
+        best.columns.risk,
+        best.columns.protection,
+        best.columns.control,
+        best.columns.category,
+        ...best.columns.scales
+      ].filter(index => index >= 0));
+
+      return {
+        aoa: [canonicalHeaders, ...dataRows],
+        sheetName: best.sheetName,
+        headerRow: best.headerRow,
+        rowCount: dataRows.length,
+        ignoredColumns: Math.max(0, best.headers.length - usedColumns.size),
+        detected: true
+      };
+    }
+
+    function prepareDecodeWorkbook(workbook) {
+      let best = null;
+      let bestValid = null;
+
+      for (const sheetName of workbook.SheetNames) {
+        const worksheet = workbook.Sheets[sheetName];
+        const rawRows = XLSX.utils.sheet_to_json(worksheet, { header: 1, defval: '', raw: true });
+        const displayRows = XLSX.utils.sheet_to_json(worksheet, { header: 1, defval: '', raw: false });
+        const scanLimit = Math.min(displayRows.length, 20);
+
+        for (let headerRow = 0; headerRow < scanLimit; headerRow++) {
+          const headers = (displayRows[headerRow] || []).map(cleanText);
+          while (headers.length && headers[headers.length - 1] === '') headers.pop();
+          const detection = detectDecodeColumns(headers);
+          if (!best || detection.score > best.score) {
+            best = { sheetName, rawRows, displayRows, headerRow, headers, ...detection };
+          }
+          if (detection.valid && (!bestValid || detection.score > bestValid.score)) {
+            bestValid = { sheetName, rawRows, displayRows, headerRow, headers, ...detection };
+          }
+        }
+      }
+
+      if (bestValid) return canonicalizeDecodeTable(bestValid);
+
+      const firstSheet = workbook.Sheets[workbook.SheetNames[0]];
+      const firstRows = firstSheet ? XLSX.utils.sheet_to_json(firstSheet, { header: 1, defval: '', raw: true }) : [];
+      if ((!best || best.score < 10) && firstRows.length && (firstRows[0] || []).length >= 22) {
+        return {
+          aoa: firstRows,
+          sheetName: workbook.SheetNames[0],
+          headerRow: 0,
+          rowCount: Math.max(0, firstRows.length - 1),
+          ignoredColumns: 0,
+          detected: false
+        };
+      }
+
+      const missing = [];
+      for (const field of best?.missingFields || Object.keys(decodeFieldDefinitions)) {
+        missing.push(decodeFieldDefinitions[field]?.label || field);
+      }
+      if (best?.missingScales?.length) missing.push(`шкалы: ${best.missingScales.join(', ')}`);
+      throw new Error(`Не найдены обязательные столбцы: ${missing.join('; ')}`);
+    }
+
     fileEl.addEventListener('change', async (e) => {
       const file = e.target.files?.[0];
       if (!file) return;
       statusEl.textContent = 'Чтение файла...';
-      const data = await file.arrayBuffer();
-      const wb = XLSX.read(data, { type: 'array' });
-      const ws = wb.Sheets[wb.SheetNames[0]];
-      const aoa = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' });
-      originalAOA = aoa;
-
-      if (!aoa.length) {
-        statusEl.textContent = 'Лист пустой';
-        processBtn.disabled = true;
-        return;
-      }
-      statusEl.textContent = 'Файл загружен. Готов к обработке.';
-      processBtn.disabled = false;
+      statusEl.className = 'muted';
+      workbookOut = null;
+      originalAOA = null;
+      processBtn.disabled = true;
       downloadBtn.disabled = true;
       previewTable.innerHTML = '';
+
+      try {
+        const data = await file.arrayBuffer();
+        const wb = XLSX.read(data, { type: 'array' });
+        const prepared = prepareDecodeWorkbook(wb);
+        originalAOA = prepared.aoa;
+
+        if (prepared.rowCount === 0) {
+          statusEl.textContent = 'В таблице нет строк с данными.';
+          statusEl.className = 'muted status-error';
+          return;
+        }
+
+        if (prepared.detected) {
+          const extras = prepared.ignoredColumns
+            ? ` Лишних столбцов пропущено: ${prepared.ignoredColumns}.`
+            : '';
+          const headerNote = prepared.headerRow
+            ? ` Шапка найдена в строке ${prepared.headerRow + 1}.`
+            : '';
+          statusEl.textContent = `Файл загружен: ${prepared.rowCount} строк, лист «${prepared.sheetName}». Столбцы распознаны по заголовкам.${extras}${headerNote}`;
+        } else {
+          statusEl.textContent = `Файл загружен: ${prepared.rowCount} строк. Использован старый фиксированный формат столбцов.`;
+        }
+        statusEl.className = 'muted status-ok';
+        processBtn.disabled = false;
+      } catch (error) {
+        statusEl.textContent = error?.message || 'Не удалось прочитать таблицу.';
+        statusEl.className = 'muted status-error';
+        processBtn.disabled = true;
+      }
     });
 
     function normalizeClass(value) {
